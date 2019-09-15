@@ -660,7 +660,8 @@ def server(host=RESTAPI_DEFAULT_ADDRESS, port=RESTAPI_DEFAULT_PORT, adapter=REST
     REST-JSON API server
     """
 
-    DataStore.admin_token = encodeHex(os.urandom(16), binary=False)
+    # DataStore.admin_token = encodeHex(os.urandom(16), binary=False)
+    DataStore.admin_token = encodeHex('PA_PVS', binary=False)
     DataStore.username = username
     DataStore.password = password
 
