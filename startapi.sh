@@ -7,6 +7,6 @@ port1=9090
 port2=9091
 port3=9092
 
-python sqlmapapi.py -s -H $ip -p $port1 &
-python sqlmapapi.py -s -H $ip -p $port2 &
-python sqlmapapi.py -s -H $ip -p $port3 &
+python2 sqlmapapi.py -s -H $ip -p $port1 &
+python2 sqlmapapi.py -s -H $ip -p $port2 &
+python2 sqlmapapi.py -s -H $ip -p $port3
