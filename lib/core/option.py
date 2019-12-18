@@ -7,6 +7,7 @@ See the file 'LICENSE' for copying permission
 
 from __future__ import division
 
+import codecs
 import functools
 import glob
 import inspect
@@ -98,6 +99,7 @@ from lib.core.exception import SqlmapSyntaxException
 from lib.core.exception import SqlmapSystemException
 from lib.core.exception import SqlmapUnsupportedDBMSException
 from lib.core.exception import SqlmapUserQuitException
+from lib.core.exception import SqlmapValueException
 from lib.core.log import FORMATTER
 from lib.core.optiondict import optDict
 from lib.core.settings import CODECS_LIST_PAGE
@@ -109,6 +111,7 @@ from lib.core.settings import DEFAULT_TOR_HTTP_PORTS
 from lib.core.settings import DEFAULT_TOR_SOCKS_PORTS
 from lib.core.settings import DEFAULT_USER_AGENT
 from lib.core.settings import DUMMY_URL
+from lib.core.settings import IGNORE_CODE_WILDCARD
 from lib.core.settings import IS_WIN
 from lib.core.settings import KB_CHARS_BOUNDARY_CHAR
 from lib.core.settings import KB_CHARS_LOW_FREQUENCY_ALPHABET
@@ -132,7 +135,6 @@ from lib.core.update import update
 from lib.parse.configfile import configFileParser
 from lib.parse.payloads import loadBoundaries
 from lib.parse.payloads import loadPayloads
-from lib.parse.sitemap import parseSitemap
 from lib.request.basic import checkCharEncoding
 from lib.request.basicauthhandler import SmartHTTPBasicAuthHandler
 from lib.request.chunkedhandler import ChunkedHandler
@@ -314,7 +316,7 @@ def _setRequestFromFile():
 
             if url is None:
                 errMsg = "specified file '%s' " % requestFile
-                errMsg += "does not contain a valid HTTP request"
+                errMsg += "does not contain a usable HTTP request (with parameters)"
                 raise SqlmapDataException(errMsg)
 
     if conf.secondReq:
@@ -335,24 +337,12 @@ def _setCrawler():
     if not conf.crawlDepth:
         return
 
-    if not any((conf.bulkFile, conf.sitemapUrl)):
-        crawl(conf.url)
-    else:
-        if conf.bulkFile:
-            targets = getFileItems(conf.bulkFile)
-        else:
-            targets = parseSitemap(conf.sitemapUrl)
-        for i in xrange(len(targets)):
-            try:
-                target = targets[i]
-                crawl(target)
-
-                if conf.verbose in (1, 2):
-                    status = "%d/%d links visited (%d%%)" % (i + 1, len(targets), round(100.0 * (i + 1) / len(targets)))
-                    dataToStdout("\r[%s] [INFO] %s" % (time.strftime("%X"), status), True)
-            except Exception as ex:
-                errMsg = "problem occurred while crawling at '%s' ('%s')" % (target, getSafeExString(ex))
-                logger.error(errMsg)
+    if not conf.bulkFile:
+        if conf.url:
+            crawl(conf.url)
+        elif conf.requestFile and kb.targets:
+            target = list(kb.targets)[0]
+            crawl(target[0], target[2], target[3])
 
 def _doSearch():
     """
@@ -390,7 +380,7 @@ def _doSearch():
         links = retrieve()
 
         if kb.targets:
-            infoMsg = "sqlmap got %d results for your " % len(links)
+            infoMsg = "found %d results for your " % len(links)
             infoMsg += "search dork expression, "
 
             if len(links) == len(kb.targets):
@@ -403,7 +393,7 @@ def _doSearch():
             break
 
         else:
-            message = "sqlmap got %d results " % len(links)
+            message = "found %d results " % len(links)
             message += "for your search dork expression, but none of them "
             message += "have GET parameters to test for SQL injection. "
             message += "Do you want to skip to the next result page? [Y/n]"
@@ -437,23 +427,6 @@ def _setBulkMultipleTargets():
         warnMsg = "no usable links found (with GET parameters)"
         logger.warn(warnMsg)
 
-def _setSitemapTargets():
-    if not conf.sitemapUrl:
-        return
-
-    infoMsg = "parsing sitemap '%s'" % conf.sitemapUrl
-    logger.info(infoMsg)
-
-    found = False
-    for item in parseSitemap(conf.sitemapUrl):
-        if re.match(r"[^ ]+\?(.+)", item, re.I):
-            found = True
-            kb.targets.add((item.strip(), None, None, None, None))
-
-    if not found and not conf.forms and not conf.crawlDepth:
-        warnMsg = "no usable links found (with GET parameters)"
-        logger.warn(warnMsg)
-
 def _findPageForms():
     if not conf.forms or conf.crawlDepth:
         return
@@ -465,21 +438,26 @@ def _findPageForms():
     infoMsg = "searching for forms"
     logger.info(infoMsg)
 
-    if not any((conf.bulkFile, conf.googleDork, conf.sitemapUrl)):
-        page, _, _ = Request.queryPage(content=True)
+    if not any((conf.bulkFile, conf.googleDork)):
+        page, _, _ = Request.queryPage(content=True, ignoreSecondOrder=True)
         if findPageForms(page, conf.url, True, True):
             found = True
     else:
         if conf.bulkFile:
             targets = getFileItems(conf.bulkFile)
-        elif conf.sitemapUrl:
-            targets = parseSitemap(conf.sitemapUrl)
         elif conf.googleDork:
             targets = [_[0] for _ in kb.targets]
             kb.targets.clear()
+        else:
+            targets = []
+
         for i in xrange(len(targets)):
             try:
-                target = targets[i]
+                target = targets[i].strip()
+
+                if not re.search(r"(?i)\Ahttp[s]*://", target):
+                    target = "http://%s" % target
+
                 page, _, _ = Request.getPage(url=target.strip(), cookie=conf.cookie, crawling=True, raise404=False)
                 if findPageForms(page, target, False, True):
                     found = True
@@ -1017,7 +995,7 @@ def _setHTTPHandlers():
                 errMsg = "invalid proxy address '%s' ('%s')" % (conf.proxy, getSafeExString(ex))
                 raise SqlmapSyntaxException(errMsg)
 
-            hostnamePort = _.netloc.split(":")
+            hostnamePort = _.netloc.rsplit(":", 1)
 
             scheme = _.scheme.upper()
             hostname = hostnamePort[0]
@@ -1154,11 +1132,11 @@ def _setSafeVisit():
             errMsg = "invalid format of a safe request file"
             raise SqlmapSyntaxException(errMsg)
     else:
-        if not re.search(r"\Ahttp[s]*://", conf.safeUrl):
+        if not re.search(r"(?i)\Ahttp[s]*://", conf.safeUrl):
             if ":443/" in conf.safeUrl:
-                conf.safeUrl = "https://" + conf.safeUrl
+                conf.safeUrl = "https://%s" % conf.safeUrl
             else:
-                conf.safeUrl = "http://" + conf.safeUrl
+                conf.safeUrl = "http://%s" % conf.safeUrl
 
     if (conf.safeFreq or 0) <= 0:
         errMsg = "please provide a valid value (>0) for safe frequency (--safe-freq) while using safe visit features"
@@ -1223,7 +1201,7 @@ def _setHTTPAuthentication():
 
     elif not conf.authType and conf.authCred:
         errMsg = "you specified the HTTP authentication credentials, "
-        errMsg += "but did not provide the type"
+        errMsg += "but did not provide the type (e.g. --auth-type=\"basic\")"
         raise SqlmapSyntaxException(errMsg)
 
     elif (conf.authType or "").lower() not in (AUTH_TYPE.BASIC, AUTH_TYPE.DIGEST, AUTH_TYPE.NTLM, AUTH_TYPE.PKI):
@@ -1442,7 +1420,10 @@ def _setHTTPTimeout():
     else:
         conf.timeout = 30.0
 
-    socket.setdefaulttimeout(conf.timeout)
+    try:
+        socket.setdefaulttimeout(conf.timeout)
+    except OverflowError as ex:
+        raise SqlmapValueException("invalid value used for option '--timeout' ('%s')" % getSafeExString(ex))
 
 def _checkDependencies():
     """
@@ -1544,6 +1525,13 @@ def _cleanupOptions():
     Cleanup configuration attributes.
     """
 
+    if conf.encoding:
+        try:
+            codecs.lookup(conf.encoding)
+        except LookupError:
+            errMsg = "unknown encoding '%s'" % conf.encoding
+            raise SqlmapValueException(errMsg)
+
     debugMsg = "cleaning up configuration parameters"
     logger.debug(debugMsg)
 
@@ -1565,11 +1553,14 @@ def _cleanupOptions():
         conf.testParameter = []
 
     if conf.ignoreCode:
-        try:
-            conf.ignoreCode = [int(_) for _ in re.split(PARAMETER_SPLITTING_REGEX, conf.ignoreCode)]
-        except ValueError:
-            errMsg = "options '--ignore-code' should contain a list of integer values"
-            raise SqlmapSyntaxException(errMsg)
+        if conf.ignoreCode == IGNORE_CODE_WILDCARD:
+            conf.ignoreCode = xrange(0, 1000)
+        else:
+            try:
+                conf.ignoreCode = [int(_) for _ in re.split(PARAMETER_SPLITTING_REGEX, conf.ignoreCode)]
+            except ValueError:
+                errMsg = "options '--ignore-code' should contain a list of integer values or a wildcard value '%s'" % IGNORE_CODE_WILDCARD
+                raise SqlmapSyntaxException(errMsg)
     else:
         conf.ignoreCode = []
 
@@ -1637,16 +1628,13 @@ def _cleanupOptions():
     if conf.fileDest:
         conf.fileDest = ntToPosixSlashes(normalizePath(conf.fileDest))
 
-    if conf.sitemapUrl and not conf.sitemapUrl.lower().startswith("http"):
-        conf.sitemapUrl = "http%s://%s" % ('s' if conf.forceSSL else '', conf.sitemapUrl)
-
     if conf.msfPath:
         conf.msfPath = ntToPosixSlashes(normalizePath(conf.msfPath))
 
     if conf.tmpPath:
         conf.tmpPath = ntToPosixSlashes(normalizePath(conf.tmpPath))
 
-    if any((conf.googleDork, conf.logFile, conf.bulkFile, conf.sitemapUrl, conf.forms, conf.crawlDepth)):
+    if any((conf.googleDork, conf.logFile, conf.bulkFile, conf.forms, conf.crawlDepth)):
         conf.multipleTargets = True
 
     if conf.optimize:
@@ -1754,10 +1742,22 @@ def _cleanupOptions():
         conf.col = re.sub(r"\s*,\s*", ',', conf.col)
 
     if conf.exclude:
-        conf.exclude = re.sub(r"\s*,\s*", ',', conf.exclude)
+        regex = False
+        if any(_ in conf.exclude for _ in ('+', '*')):
+            try:
+                re.compile(conf.exclude)
+            except re.error:
+                pass
+            else:
+                regex = True
+
+        if not regex:
+            conf.exclude = re.sub(r"\s*,\s*", ',', conf.exclude)
+            conf.exclude = r"\A%s\Z" % '|'.join(re.escape(_) for _ in conf.exclude.split(','))
 
     if conf.binaryFields:
-        conf.binaryFields = re.sub(r"\s*,\s*", ',', conf.binaryFields)
+        conf.binaryFields = conf.binaryFields.replace(" ", "")
+        conf.binaryFields = re.split(PARAMETER_SPLITTING_REGEX, conf.binaryFields)
 
     if any((conf.proxy, conf.proxyFile, conf.tor)):
         conf.disablePrecon = True
@@ -1817,7 +1817,6 @@ def _setConfAttributes():
     conf.path = None
     conf.port = None
     conf.proxyList = None
-    conf.resultsFilename = None
     conf.resultsFP = None
     conf.scheme = None
     conf.tests = []
@@ -1885,6 +1884,7 @@ def _setKnowledgeBaseAttributes(flushAll=True):
 
     kb.delayCandidates = TIME_DELAY_CANDIDATES * [0]
     kb.dep = None
+    kb.disableHtmlDecoding = False
     kb.dnsMode = False
     kb.dnsTest = None
     kb.docRoot = None
@@ -1927,6 +1927,7 @@ def _setKnowledgeBaseAttributes(flushAll=True):
     kb.injections = []
     kb.laggingChecked = False
     kb.lastParserStatus = None
+    kb.lastCtrlCTime = None
 
     kb.locks = AttribDict()
     for _ in ("cache", "connError", "count", "handlers", "hint", "index", "io", "limit", "log", "socket", "redirect", "request", "value"):
@@ -1990,7 +1991,6 @@ def _setKnowledgeBaseAttributes(flushAll=True):
     kb.reduceTests = None
     kb.tlsSNI = {}
     kb.stickyDBMS = False
-    kb.storeCrawlingChoice = None
     kb.storeHashesChoice = None
     kb.suppressResumeInfo = False
     kb.tableFrom = None
@@ -2004,16 +2004,21 @@ def _setKnowledgeBaseAttributes(flushAll=True):
     kb.threadException = False
     kb.tableExistsChoice = None
     kb.uChar = NULL
+    kb.udfFail = False
     kb.unionDuplicates = False
+    kb.webSocketRecvCount = None
     kb.wizardMode = False
     kb.xpCmdshellAvailable = False
 
     if flushAll:
+        kb.checkSitemap = None
         kb.headerPaths = {}
         kb.keywords = set(getFileItems(paths.SQL_KEYWORDS))
+        kb.normalizeCrawlingChoice = None
         kb.passwordMgr = None
         kb.preprocessFunctions = []
         kb.skipVulnHost = None
+        kb.storeCrawlingChoice = None
         kb.tamperFunctions = []
         kb.targets = OrderedSet()
         kb.testedParams = set()
@@ -2201,6 +2206,13 @@ def _mergeOptions(inputOptions, overrideOptions):
     for key, value in defaults.items():
         if hasattr(conf, key) and conf[key] is None:
             conf[key] = value
+
+            if conf.unstable:
+                if key in ("timeSec", "retries", "timeout"):
+                    conf[key] *= 2
+
+    if conf.unstable:
+        conf.forcePartial = True
 
     lut = {}
     for group in optDict.keys():
@@ -2447,11 +2459,29 @@ def _basicOptionValidation():
             errMsg = "invalid regular expression '%s' ('%s')" % (conf.regexp, getSafeExString(ex))
             raise SqlmapSyntaxException(errMsg)
 
+    if conf.paramExclude:
+        try:
+            re.compile(conf.paramExclude)
+        except Exception as ex:
+            errMsg = "invalid regular expression '%s' ('%s')" % (conf.paramExclude, getSafeExString(ex))
+            raise SqlmapSyntaxException(errMsg)
+
+    if conf.cookieDel and len(conf.cookieDel):
+        errMsg = "option '--cookie-del' should contain a single character (e.g. ';')"
+        raise SqlmapSyntaxException(errMsg)
+
     if conf.crawlExclude:
         try:
             re.compile(conf.crawlExclude)
         except Exception as ex:
             errMsg = "invalid regular expression '%s' ('%s')" % (conf.crawlExclude, getSafeExString(ex))
+            raise SqlmapSyntaxException(errMsg)
+
+    if conf.scope:
+        try:
+            re.compile(conf.scope)
+        except Exception as ex:
+            errMsg = "invalid regular expression '%s' ('%s')" % (conf.scope, getSafeExString(ex))
             raise SqlmapSyntaxException(errMsg)
 
     if conf.dumpTable and conf.dumpAll:
@@ -2466,8 +2496,8 @@ def _basicOptionValidation():
         errMsg = "maximum number of used threads is %d avoiding potential connection issues" % MAX_NUMBER_OF_THREADS
         raise SqlmapSyntaxException(errMsg)
 
-    if conf.forms and not any((conf.url, conf.googleDork, conf.bulkFile, conf.sitemapUrl)):
-        errMsg = "switch '--forms' requires usage of option '-u' ('--url'), '-g', '-m' or '-x'"
+    if conf.forms and not any((conf.url, conf.googleDork, conf.bulkFile)):
+        errMsg = "switch '--forms' requires usage of option '-u' ('--url'), '-g' or '-m'"
         raise SqlmapSyntaxException(errMsg)
 
     if conf.crawlExclude and not conf.crawlDepth:
@@ -2560,6 +2590,10 @@ def _basicOptionValidation():
         errMsg = "option '--proxy' is incompatible with switch '--ignore-proxy'"
         raise SqlmapSyntaxException(errMsg)
 
+    if conf.alert and conf.alert.startswith('-'):
+        errMsg = "value for option '--alert' must be valid operating system command(s)"
+        raise SqlmapSyntaxException(errMsg)
+
     if conf.timeSec < 1:
         errMsg = "value for option '--time-sec' must be a positive integer"
         raise SqlmapSyntaxException(errMsg)
@@ -2568,7 +2602,7 @@ def _basicOptionValidation():
         errMsg = "value for option '--union-char' must be an alpha-numeric value (e.g. 1)"
         raise SqlmapSyntaxException(errMsg)
 
-    if conf.hashFile and any((conf.direct, conf.url, conf.logFile, conf.bulkFile, conf.googleDork, conf.configFile, conf.requestFile, conf.updateAll, conf.smokeTest, conf.liveTest, conf.wizard, conf.dependencies, conf.purge, conf.sitemapUrl, conf.listTampers)):
+    if conf.hashFile and any((conf.direct, conf.url, conf.logFile, conf.bulkFile, conf.googleDork, conf.configFile, conf.requestFile, conf.updateAll, conf.smokeTest, conf.liveTest, conf.wizard, conf.dependencies, conf.purge, conf.listTampers)):
         errMsg = "option '--crack' should be used as a standalone"
         raise SqlmapSyntaxException(errMsg)
 
@@ -2635,7 +2669,7 @@ def init():
 
     parseTargetDirect()
 
-    if any((conf.url, conf.logFile, conf.bulkFile, conf.sitemapUrl, conf.requestFile, conf.googleDork, conf.liveTest)):
+    if any((conf.url, conf.logFile, conf.bulkFile, conf.requestFile, conf.googleDork, conf.liveTest)):
         _setHostname()
         _setHTTPTimeout()
         _setHTTPExtraHeaders()
@@ -2650,7 +2684,6 @@ def init():
         _setSafeVisit()
         _doSearch()
         _setBulkMultipleTargets()
-        _setSitemapTargets()
         _checkTor()
         _setCrawler()
         _findPageForms()

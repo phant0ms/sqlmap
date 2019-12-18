@@ -34,6 +34,7 @@ from lib.core.data import conf
 from lib.core.data import kb
 from lib.core.data import logger
 from lib.core.decorators import cachedmethod
+from lib.core.decorators import lockedmethod
 from lib.core.dicts import HTML_ENTITIES
 from lib.core.enums import DBMS
 from lib.core.enums import HTTP_HEADER
@@ -47,6 +48,7 @@ from lib.core.settings import MAX_CONNECTION_TOTAL_SIZE
 from lib.core.settings import META_CHARSET_REGEX
 from lib.core.settings import PARSE_HEADERS_LIMIT
 from lib.core.settings import SELECT_FROM_TABLE_REGEX
+from lib.core.settings import UNICODE_ENCODING
 from lib.core.settings import VIEWSTATE_REGEX
 from lib.parse.headers import headersParser
 from lib.parse.html import htmlParser
@@ -57,6 +59,7 @@ from thirdparty.odict import OrderedDict
 from thirdparty.six import unichr as _unichr
 from thirdparty.six.moves import http_client as _http_client
 
+@lockedmethod
 def forgeHeaders(items=None, base=None):
     """
     Prepare HTTP Cookie, HTTP User-Agent and HTTP Referer headers to use when performing
@@ -110,9 +113,9 @@ def forgeHeaders(items=None, base=None):
                     if conf.loadCookies:
                         conf.httpHeaders = filterNone((item if item[0] != HTTP_HEADER.COOKIE else None) for item in conf.httpHeaders)
                     elif kb.mergeCookies is None:
-                        message = "you provided a HTTP %s header value. " % HTTP_HEADER.COOKIE
-                        message += "The target URL provided its own cookies within "
-                        message += "the HTTP %s header which intersect with yours. " % HTTP_HEADER.SET_COOKIE
+                        message = "you provided a HTTP %s header value, while " % HTTP_HEADER.COOKIE
+                        message += "target URL provides its own cookies within "
+                        message += "HTTP %s header which intersect with yours. " % HTTP_HEADER.SET_COOKIE
                         message += "Do you want to merge them in further requests? [Y/n] "
 
                         kb.mergeCookies = readInput(message, default='Y', boolean=True)
@@ -258,13 +261,13 @@ def getHeuristicCharEncoding(page):
     retVal = kb.cache.encoding.get(key) or detect(page)["encoding"]
     kb.cache.encoding[key] = retVal
 
-    if retVal:
+    if retVal and retVal.lower().replace('-', "") == UNICODE_ENCODING.lower().replace('-', ""):
         infoMsg = "heuristics detected web page charset '%s'" % retVal
         singleTimeLogMessage(infoMsg, logging.INFO, retVal)
 
     return retVal
 
-def decodePage(page, contentEncoding, contentType):
+def decodePage(page, contentEncoding, contentType, percentDecode=True):
     """
     Decode compressed/charset HTTP response
 
@@ -331,40 +334,44 @@ def decodePage(page, contentEncoding, contentType):
 
     # can't do for all responses because we need to support binary files too
     if isinstance(page, six.binary_type) and "text/" in contentType:
-        # e.g. &#x9;&#195;&#235;&#224;&#226;&#224;
-        if b"&#" in page:
-            page = re.sub(b"&#x([0-9a-f]{1,2});", lambda _: decodeHex(_.group(1) if len(_.group(1)) == 2 else "0%s" % _.group(1)), page)
-            page = re.sub(b"&#(\\d{1,3});", lambda _: six.int2byte(int(_.group(1))) if int(_.group(1)) < 256 else _.group(0), page)
+        if not kb.disableHtmlDecoding:
+            # e.g. &#x9;&#195;&#235;&#224;&#226;&#224;
+            if b"&#" in page:
+                page = re.sub(b"&#x([0-9a-f]{1,2});", lambda _: decodeHex(_.group(1) if len(_.group(1)) == 2 else "0%s" % _.group(1)), page)
+                page = re.sub(b"&#(\\d{1,3});", lambda _: six.int2byte(int(_.group(1))) if int(_.group(1)) < 256 else _.group(0), page)
 
-        # e.g. %20%28%29
-        if b"%" in page:
-            page = re.sub(b"%([0-9a-fA-F]{2})", lambda _: decodeHex(_.group(1)), page)
+            # e.g. %20%28%29
+            if percentDecode:
+                if b"%" in page:
+                    page = re.sub(b"%([0-9a-fA-F]{2})", lambda _: decodeHex(_.group(1)), page)
 
-        # e.g. &amp;
-        page = re.sub(b"&([^;]+);", lambda _: six.int2byte(HTML_ENTITIES[getText(_.group(1))]) if HTML_ENTITIES.get(getText(_.group(1)), 256) < 256 else _.group(0), page)
+            # e.g. &amp;
+            page = re.sub(b"&([^;]+);", lambda _: six.int2byte(HTML_ENTITIES[getText(_.group(1))]) if HTML_ENTITIES.get(getText(_.group(1)), 256) < 256 else _.group(0), page)
 
-        kb.pageEncoding = kb.pageEncoding or checkCharEncoding(getHeuristicCharEncoding(page))
+            kb.pageEncoding = kb.pageEncoding or checkCharEncoding(getHeuristicCharEncoding(page))
 
-        if (kb.pageEncoding or "").lower() == "utf-8-sig":
-            kb.pageEncoding = "utf-8"
-            if page and page.startswith("\xef\xbb\xbf"):  # Reference: https://docs.python.org/2/library/codecs.html (Note: noticed problems when "utf-8-sig" is left to Python for handling)
-                page = page[3:]
+            if (kb.pageEncoding or "").lower() == "utf-8-sig":
+                kb.pageEncoding = "utf-8"
+                if page and page.startswith("\xef\xbb\xbf"):  # Reference: https://docs.python.org/2/library/codecs.html (Note: noticed problems when "utf-8-sig" is left to Python for handling)
+                    page = page[3:]
 
-        page = getUnicode(page, kb.pageEncoding)
+            page = getUnicode(page, kb.pageEncoding)
 
-        # e.g. &#8217;&#8230;&#8482;
-        if "&#" in page:
-            def _(match):
-                retVal = match.group(0)
-                try:
-                    retVal = _unichr(int(match.group(1)))
-                except (ValueError, OverflowError):
-                    pass
-                return retVal
-            page = re.sub(r"&#(\d+);", _, page)
+            # e.g. &#8217;&#8230;&#8482;
+            if "&#" in page:
+                def _(match):
+                    retVal = match.group(0)
+                    try:
+                        retVal = _unichr(int(match.group(1)))
+                    except (ValueError, OverflowError):
+                        pass
+                    return retVal
+                page = re.sub(r"&#(\d+);", _, page)
 
-        # e.g. &zeta;
-        page = re.sub(r"&([^;]+);", lambda _: _unichr(HTML_ENTITIES[_.group(1)]) if HTML_ENTITIES.get(_.group(1), 0) > 255 else _.group(0), page)
+            # e.g. &zeta;
+            page = re.sub(r"&([^;]+);", lambda _: _unichr(HTML_ENTITIES[_.group(1)]) if HTML_ENTITIES.get(_.group(1), 0) > 255 else _.group(0), page)
+        else:
+            page = getUnicode(page, kb.pageEncoding)
 
     return page
 
@@ -425,11 +432,16 @@ def processResponse(page, responseHeaders, code=None, status=None):
         for match in re.finditer(r"(?si)<form.+?</form>", page):
             if re.search(r"(?i)captcha", match.group(0)):
                 kb.captchaDetected = True
-                warnMsg = "potential CAPTCHA protection mechanism detected"
-                if re.search(r"(?i)<title>[^<]*CloudFlare", page):
-                    warnMsg += " (CloudFlare)"
-                singleTimeWarnMessage(warnMsg)
                 break
+
+        if re.search(r"<meta[^>]+\brefresh\b[^>]+\bcaptcha\b", page):
+            kb.captchaDetected = True
+
+        if kb.captchaDetected:
+            warnMsg = "potential CAPTCHA protection mechanism detected"
+            if re.search(r"(?i)<title>[^<]*CloudFlare", page):
+                warnMsg += " (CloudFlare)"
+            singleTimeWarnMessage(warnMsg)
 
     if re.search(BLOCKED_IP_REGEX, page):
         warnMsg = "it appears that you have been blocked by the target server"

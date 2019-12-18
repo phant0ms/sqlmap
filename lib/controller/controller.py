@@ -31,10 +31,12 @@ from lib.core.common import getSafeExString
 from lib.core.common import hashDBRetrieve
 from lib.core.common import hashDBWrite
 from lib.core.common import intersect
+from lib.core.common import isDigit
 from lib.core.common import isListLike
 from lib.core.common import parseTargetUrl
 from lib.core.common import popValue
 from lib.core.common import pushValue
+from lib.core.common import randomInt
 from lib.core.common import randomStr
 from lib.core.common import readInput
 from lib.core.common import removePostHintPrefix
@@ -129,7 +131,7 @@ def _selectInjection():
         message += "[q] Quit"
         choice = readInput(message, default='0').upper()
 
-        if choice.isdigit() and int(choice) < len(kb.injections) and int(choice) >= 0:
+        if isDigit(choice) and int(choice) < len(kb.injections) and int(choice) >= 0:
             index = int(choice)
         elif choice == 'Q':
             raise SqlmapUserQuitException
@@ -202,10 +204,11 @@ def _randomFillBlankFields(value):
             for match in re.finditer(EMPTY_FORM_FIELDS_REGEX, retVal):
                 item = match.group("result")
                 if not any(_ in item for _ in IGNORE_PARAMETERS) and not re.search(ASP_NET_CONTROL_REGEX, item):
+                    newValue = randomStr() if not re.search(r"^id|id$", item, re.I) else randomInt()
                     if item[-1] == DEFAULT_GET_POST_DELIMITER:
-                        retVal = retVal.replace(item, "%s%s%s" % (item[:-1], randomStr(), DEFAULT_GET_POST_DELIMITER))
+                        retVal = retVal.replace(item, "%s%s%s" % (item[:-1], newValue, DEFAULT_GET_POST_DELIMITER))
                     else:
-                        retVal = retVal.replace(item, "%s%s" % (item, randomStr()))
+                        retVal = retVal.replace(item, "%s%s" % (item, newValue))
 
     return retVal
 
@@ -256,13 +259,9 @@ def _saveToResultsFile():
             line = "%s,%s,%s,%s,%s%s" % (safeCSValue(kb.originalUrls.get(conf.url) or conf.url), place, parameter, "".join(techniques[_][0].upper() for _ in sorted(value)), notes, os.linesep)
             conf.resultsFP.write(line)
 
-        if not results:
-            line = "%s,,,,%s" % (conf.url, os.linesep)
-            conf.resultsFP.write(line)
-
         conf.resultsFP.flush()
     except IOError as ex:
-        errMsg = "unable to write to the results file '%s' ('%s'). " % (conf.resultsFilename, getSafeExString(ex))
+        errMsg = "unable to write to the results file '%s' ('%s'). " % (conf.resultsFile, getSafeExString(ex))
         raise SqlmapSystemException(errMsg)
 
 @stackedmethod
@@ -292,7 +291,7 @@ def start():
         return False
 
     if kb.targets and len(kb.targets) > 1:
-        infoMsg = "sqlmap got a total of %d targets" % len(kb.targets)
+        infoMsg = "found a total of %d targets" % len(kb.targets)
         logger.info(infoMsg)
 
     hostCount = 0
@@ -300,7 +299,6 @@ def start():
 
     for targetUrl, targetMethod, targetData, targetCookie, targetHeaders in kb.targets:
         try:
-
             if conf.checkInternet:
                 infoMsg = "checking for Internet connection"
                 logger.info(infoMsg)
@@ -316,7 +314,7 @@ def start():
                     dataToStdout("\n")
 
             conf.url = targetUrl
-            conf.method = targetMethod.upper() if targetMethod else targetMethod
+            conf.method = targetMethod.upper().strip() if targetMethod else targetMethod
             conf.data = targetData
             conf.cookie = targetCookie
             conf.httpHeaders = list(initialHeaders)
@@ -374,7 +372,7 @@ def start():
                     message += "\nCookie: %s" % conf.cookie
 
                 if conf.data is not None:
-                    message += "\n%s data: %s" % ((conf.method if conf.method != HTTPMETHOD.GET else conf.method) or HTTPMETHOD.POST, urlencode(conf.data) if conf.data else "")
+                    message += "\n%s data: %s" % ((conf.method if conf.method != HTTPMETHOD.GET else conf.method) or HTTPMETHOD.POST, urlencode(conf.data or "") if re.search(r"\A\s*[<{]", conf.data or "") is None else conf.data)
 
                 if conf.forms and conf.method:
                     if conf.method == HTTPMETHOD.GET and targetUrl.find("?") == -1:
@@ -389,7 +387,7 @@ def start():
                         break
                     else:
                         if conf.method != HTTPMETHOD.GET:
-                            message = "Edit %s data [default: %s]%s: " % (conf.method, urlencode(conf.data) if conf.data else "None", " (Warning: blank fields detected)" if conf.data and extractRegexResult(EMPTY_FORM_FIELDS_REGEX, conf.data) else "")
+                            message = "Edit %s data [default: %s]%s: " % (conf.method, urlencode(conf.data or "") if re.search(r"\A\s*[<{]", conf.data or "None") is None else conf.data, " (Warning: blank fields detected)" if conf.data and extractRegexResult(EMPTY_FORM_FIELDS_REGEX, conf.data) else "")
                             conf.data = readInput(message, default=conf.data)
                             conf.data = _randomFillBlankFields(conf.data)
                             conf.data = urldecode(conf.data) if conf.data and urlencode(DEFAULT_GET_POST_DELIMITER, None) not in conf.data else conf.data
@@ -458,18 +456,18 @@ def start():
                 for place in parameters:
                     # Test User-Agent and Referer headers only if
                     # --level >= 3
-                    skip = (place == PLACE.USER_AGENT and conf.level < 3)
-                    skip |= (place == PLACE.REFERER and conf.level < 3)
+                    skip = (place == PLACE.USER_AGENT and (kb.testOnlyCustom or conf.level < 3))
+                    skip |= (place == PLACE.REFERER and (kb.testOnlyCustom or conf.level < 3))
 
                     # --param-filter
                     skip |= (len(conf.paramFilter) > 0 and place.upper() not in conf.paramFilter)
 
                     # Test Host header only if
                     # --level >= 5
-                    skip |= (place == PLACE.HOST and conf.level < 5)
+                    skip |= (place == PLACE.HOST and (kb.testOnlyCustom or conf.level < 5))
 
                     # Test Cookie header only if --level >= 2
-                    skip |= (place == PLACE.COOKIE and conf.level < 2)
+                    skip |= (place == PLACE.COOKIE and (kb.testOnlyCustom or conf.level < 2))
 
                     skip |= (place == PLACE.USER_AGENT and intersect(USER_AGENT_ALIASES, conf.skip, True) not in ([], None))
                     skip |= (place == PLACE.REFERER and intersect(REFERER_ALIASES, conf.skip, True) not in ([], None))
@@ -482,9 +480,6 @@ def start():
                     skip &= not (place == PLACE.COOKIE and intersect((PLACE.COOKIE,), conf.testParameter, True))
 
                     if skip:
-                        continue
-
-                    if kb.testOnlyCustom and place not in (PLACE.URI, PLACE.CUSTOM_POST, PLACE.CUSTOM_HEADER):
                         continue
 
                     if place not in conf.paramDict:
@@ -740,9 +735,9 @@ def start():
         logger.info("fetched data logged to text files under '%s'" % conf.outputPath)
 
     if conf.multipleTargets:
-        if conf.resultsFilename:
+        if conf.resultsFile:
             infoMsg = "you can find results of scanning in multiple targets "
-            infoMsg += "mode inside the CSV file '%s'" % conf.resultsFilename
+            infoMsg += "mode inside the CSV file '%s'" % conf.resultsFile
             logger.info(infoMsg)
 
     return True

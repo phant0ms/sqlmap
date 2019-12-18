@@ -130,6 +130,7 @@ from lib.core.settings import GOOGLE_ANALYTICS_COOKIE_PREFIX
 from lib.core.settings import HASHDB_MILESTONE_VALUE
 from lib.core.settings import HOST_ALIASES
 from lib.core.settings import HTTP_CHUNKED_SPLIT_KEYWORDS
+from lib.core.settings import IGNORE_PARAMETERS
 from lib.core.settings import IGNORE_SAVE_OPTIONS
 from lib.core.settings import INFERENCE_UNKNOWN_CHAR
 from lib.core.settings import IP_ADDRESS_REGEX
@@ -623,7 +624,7 @@ def paramToDict(place, parameters=None):
                 if parameter in (conf.base64Parameter or []):
                     try:
                         oldValue = value
-                        value = decodeBase64(value, binary=False)
+                        value = decodeBase64(value, binary=False, encoding=conf.encoding or UNICODE_ENCODING)
                         parameters = re.sub(r"\b%s(\b|\Z)" % re.escape(oldValue), value, parameters)
                     except:
                         errMsg = "parameter '%s' does not contain " % parameter
@@ -1231,7 +1232,7 @@ def checkPipedInput():
     # Reference: https://stackoverflow.com/a/33873570
     """
 
-    return not os.isatty(sys.stdin.fileno())
+    return not os.isatty(sys.stdin.fileno()) if hasattr(sys.stdin, "fileno") else False
 
 def isZipFile(filename):
     """
@@ -1244,6 +1245,22 @@ def isZipFile(filename):
     checkFile(filename)
 
     return openFile(filename, "rb", encoding=None).read(len(ZIP_HEADER)) == ZIP_HEADER
+
+def isDigit(value):
+    """
+    Checks if provided (string) value consists of digits (Note: Python's isdigit() is problematic)
+
+    >>> u'\xb2'.isdigit()
+    True
+    >>> isDigit(u'\xb2')
+    False
+    >>> isDigit('123456')
+    True
+    >>> isDigit('3b3')
+    False
+    """
+
+    return re.search(r"\A[0-9]+\Z", value or "") is not None
 
 def checkFile(filename, raiseOnError=True):
     """
@@ -1680,7 +1697,7 @@ def expandAsteriskForColumns(expression):
         if db is None:
             if expression != conf.sqlQuery:
                 conf.db = db
-            else:
+            elif conf.db:
                 expression = re.sub(r"([^\w])%s" % re.escape(conf.tbl), r"\g<1>%s.%s" % (conf.db, conf.tbl), expression)
         else:
             conf.db = db
@@ -1953,7 +1970,7 @@ def safeFilepathEncode(filepath):
     retVal = filepath
 
     if filepath and six.PY2 and isinstance(filepath, six.text_type):
-        retVal = filepath.encode(sys.getfilesystemencoding() or UNICODE_ENCODING)
+        retVal = getBytes(filepath, sys.getfilesystemencoding() or UNICODE_ENCODING)
 
     return retVal
 
@@ -2746,7 +2763,7 @@ def findMultipartPostBoundary(post):
 
     return retVal
 
-def urldecode(value, encoding=None, unsafe="%%&=;+%s" % CUSTOM_INJECTION_MARK_CHAR, convall=False, spaceplus=True):
+def urldecode(value, encoding=None, unsafe="%%?&=;+%s" % CUSTOM_INJECTION_MARK_CHAR, convall=False, spaceplus=True):
     """
     URL decodes given value
 
@@ -3178,7 +3195,10 @@ def isDBMSVersionAtLeast(minimum):
                 parts[1] = filterStringValue(parts[1], '[0-9]')
                 version = '.'.join(parts)
 
-            version = float(filterStringValue(version, '[0-9.]')) + correction
+            try:
+                version = float(filterStringValue(version, '[0-9.]')) + correction
+            except ValueError:
+                return None
 
             if isinstance(minimum, six.string_types):
                 if '.' in minimum:
@@ -3464,6 +3484,23 @@ def flattenValue(value):
         else:
             yield i
 
+def joinValue(value, delimiter=','):
+    """
+    Returns a value consisting of joined parts of a given value
+
+    >>> joinValue(['1', '2'])
+    '1,2'
+    >>> joinValue('1')
+    '1'
+    """
+
+    if isListLike(value):
+        retVal = delimiter.join(value)
+    else:
+        retVal = value
+
+    return retVal
+
 def isListLike(value):
     """
     Returns True if the given value is a list-like instance
@@ -3543,7 +3580,13 @@ def openFile(filename, mode='r', encoding=UNICODE_ENCODING, errors="reversible",
 
     >>> "openFile" in openFile(__file__).read()
     True
+    >>> b"openFile" in openFile(__file__, "rb", None).read()
+    True
     """
+
+    # Reference: https://stackoverflow.com/a/37462452
+    if 'b' in mode:
+        buffering = 0
 
     if filename == STDIN_PIPE_DASH:
         if filename not in kb.cache.content:
@@ -3574,16 +3617,20 @@ def decodeIntToUnicode(value):
         try:
             if value > 255:
                 _ = "%x" % value
+
                 if len(_) % 2 == 1:
                     _ = "0%s" % _
+
                 raw = decodeHex(_)
 
                 if Backend.isDbms(DBMS.MYSQL):
+                    # Reference: https://dev.mysql.com/doc/refman/8.0/en/string-functions.html#function_ord
                     # Note: https://github.com/sqlmapproject/sqlmap/issues/1531
                     retVal = getUnicode(raw, conf.encoding or UNICODE_ENCODING)
                 elif Backend.isDbms(DBMS.MSSQL):
-                    retVal = getUnicode(raw, "UTF-16-BE")   # References: https://docs.microsoft.com/en-us/sql/relational-databases/collations/collation-and-unicode-support?view=sql-server-2017 and https://stackoverflow.com/a/14488478
-                elif Backend.getIdentifiedDbms() in (DBMS.PGSQL, DBMS.ORACLE):
+                    # Reference: https://docs.microsoft.com/en-us/sql/relational-databases/collations/collation-and-unicode-support?view=sql-server-2017 and https://stackoverflow.com/a/14488478
+                    retVal = getUnicode(raw, "UTF-16-BE")
+                elif Backend.getIdentifiedDbms() in (DBMS.PGSQL, DBMS.ORACLE, DBMS.SQLITE):     # Note: cases with Unicode code points (e.g. http://www.postgresqltutorial.com/postgresql-ascii/)
                     retVal = _unichr(value)
                 else:
                     retVal = getUnicode(raw, conf.encoding)
@@ -3786,6 +3833,8 @@ def maskSensitiveData(msg):
     Masks sensitive data in the supplied message
 
     >>> maskSensitiveData('python sqlmap.py -u "http://www.test.com/vuln.php?id=1" --banner') == 'python sqlmap.py -u *********************************** --banner'
+    True
+    >>> maskSensitiveData('sqlmap.py -u test.com/index.go?id=index') == 'sqlmap.py -u **************************'
     True
     """
 
@@ -4001,6 +4050,14 @@ def safeSQLIdentificatorNaming(name, isTable=False):
     Returns a safe representation of SQL identificator name (internal data format)
 
     # Reference: http://stackoverflow.com/questions/954884/what-special-characters-are-allowed-in-t-sql-column-retVal
+
+    >>> pushValue(kb.forcedDbms)
+    >>> kb.forcedDbms = DBMS.MSSQL
+    >>> getText(safeSQLIdentificatorNaming("begin"))
+    '[begin]'
+    >>> getText(safeSQLIdentificatorNaming("foobar"))
+    'foobar'
+    >>> kb.forceDbms = popValue()
     """
 
     retVal = name
@@ -4015,9 +4072,9 @@ def safeSQLIdentificatorNaming(name, isTable=False):
         if retVal.upper() in kb.keywords or (retVal or " ")[0].isdigit() or not re.match(r"\A[A-Za-z0-9_@%s\$]+\Z" % ('.' if _ else ""), retVal):  # MsSQL is the only DBMS where we automatically prepend schema to table name (dot is normal)
             retVal = unsafeSQLIdentificatorNaming(retVal)
 
-            if Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.ACCESS):
+            if Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.ACCESS, DBMS.SQLITE):  # Note: in SQLite double-quotes are treated as string if column/identifier is non-existent (e.g. SELECT "foobar" FROM users)
                 retVal = "`%s`" % retVal
-            elif Backend.getIdentifiedDbms() in (DBMS.PGSQL, DBMS.DB2, DBMS.SQLITE, DBMS.HSQLDB, DBMS.H2, DBMS.INFORMIX):
+            elif Backend.getIdentifiedDbms() in (DBMS.PGSQL, DBMS.DB2, DBMS.HSQLDB, DBMS.H2, DBMS.INFORMIX):
                 retVal = "\"%s\"" % retVal
             elif Backend.getIdentifiedDbms() in (DBMS.ORACLE,):
                 retVal = "\"%s\"" % retVal.upper()
@@ -4040,14 +4097,22 @@ def safeSQLIdentificatorNaming(name, isTable=False):
 def unsafeSQLIdentificatorNaming(name):
     """
     Extracts identificator's name from its safe SQL representation
+
+    >>> pushValue(kb.forcedDbms)
+    >>> kb.forcedDbms = DBMS.MSSQL
+    >>> getText(unsafeSQLIdentificatorNaming("[begin]"))
+    'begin'
+    >>> getText(unsafeSQLIdentificatorNaming("foobar"))
+    'foobar'
+    >>> kb.forceDbms = popValue()
     """
 
     retVal = name
 
     if isinstance(name, six.string_types):
-        if Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.ACCESS):
+        if Backend.getIdentifiedDbms() in (DBMS.MYSQL, DBMS.ACCESS, DBMS.SQLITE):
             retVal = name.replace("`", "")
-        elif Backend.getIdentifiedDbms() in (DBMS.PGSQL, DBMS.DB2, DBMS.SQLITE, DBMS.INFORMIX, DBMS.HSQLDB):
+        elif Backend.getIdentifiedDbms() in (DBMS.PGSQL, DBMS.DB2, DBMS.INFORMIX, DBMS.HSQLDB):
             retVal = name.replace("\"", "")
         elif Backend.getIdentifiedDbms() in (DBMS.ORACLE,):
             retVal = name.replace("\"", "").upper()
@@ -4299,11 +4364,16 @@ def asciifyUrl(url, forceQuote=False):
     if all(char in string.printable for char in url):
         return getText(url)
 
+    hostname = parts.hostname
+
+    if isinstance(hostname, six.binary_type):
+        hostname = getUnicode(hostname)
+
     # idna-encode domain
     try:
-        hostname = parts.hostname.encode("idna")
-    except LookupError:
-        hostname = parts.hostname.encode("punycode")
+        hostname = hostname.encode("idna")
+    except:
+        hostname = hostname.encode("punycode")
 
     # UTF8-quote the other parts. We check each part individually if
     # if needs to be quoted - that should catch some additional user
@@ -4400,9 +4470,9 @@ def findPageForms(content, url, raise_=False, addToTargets=False):
     try:
         forms = ParseResponse(response, backwards_compat=False)
     except ParseError:
-        if re.search(r"(?i)<!DOCTYPE html|<html", content or ""):
-            warnMsg = "badly formed HTML at the given URL ('%s'). Going to filter it" % url
-            logger.warning(warnMsg)
+        if re.search(r"(?i)<!DOCTYPE html|<html", content or "") and not re.search(r"(?i)\.js(\?|\Z)", url):
+            dbgMsg = "badly formed HTML at the given URL ('%s'). Going to filter it" % url
+            logger.debug(dbgMsg)
             filtered = _("".join(re.findall(FORM_SEARCH_REGEX, content)), url)
 
             if filtered and filtered != content:
@@ -4417,54 +4487,77 @@ def findPageForms(content, url, raise_=False, addToTargets=False):
     except:
         pass
 
-    if forms:
-        for form in forms:
-            try:
-                for control in form.controls:
-                    if hasattr(control, "items") and not any((control.disabled, control.readonly)):
-                        # if control has selectable items select first non-disabled
-                        for item in control.items:
-                            if not item.disabled:
-                                if not item.selected:
-                                    item.selected = True
-                                break
+    for form in forms or []:
+        try:
+            for control in form.controls:
+                if hasattr(control, "items") and not any((control.disabled, control.readonly)):
+                    # if control has selectable items select first non-disabled
+                    for item in control.items:
+                        if not item.disabled:
+                            if not item.selected:
+                                item.selected = True
+                            break
 
-                if conf.crawlExclude and re.search(conf.crawlExclude, form.action or ""):
-                    dbgMsg = "skipping '%s'" % form.action
-                    logger.debug(dbgMsg)
-                    continue
+            if conf.crawlExclude and re.search(conf.crawlExclude, form.action or ""):
+                dbgMsg = "skipping '%s'" % form.action
+                logger.debug(dbgMsg)
+                continue
 
-                request = form.click()
-            except (ValueError, TypeError) as ex:
-                errMsg = "there has been a problem while "
-                errMsg += "processing page forms ('%s')" % getSafeExString(ex)
-                if raise_:
-                    raise SqlmapGenericException(errMsg)
-                else:
-                    logger.debug(errMsg)
+            request = form.click()
+        except (ValueError, TypeError) as ex:
+            errMsg = "there has been a problem while "
+            errMsg += "processing page forms ('%s')" % getSafeExString(ex)
+            if raise_:
+                raise SqlmapGenericException(errMsg)
             else:
-                url = urldecode(request.get_full_url(), kb.pageEncoding)
-                method = request.get_method()
-                data = request.data
-                data = urldecode(data, kb.pageEncoding, spaceplus=False)
+                logger.debug(errMsg)
+        else:
+            url = urldecode(request.get_full_url(), kb.pageEncoding)
+            method = request.get_method()
+            data = request.data
+            data = urldecode(data, kb.pageEncoding, spaceplus=False)
 
-                if not data and method and method.upper() == HTTPMETHOD.POST:
-                    debugMsg = "invalid POST form with blank data detected"
-                    logger.debug(debugMsg)
-                    continue
+            if not data and method and method.upper() == HTTPMETHOD.POST:
+                debugMsg = "invalid POST form with blank data detected"
+                logger.debug(debugMsg)
+                continue
 
-                # flag to know if we are dealing with the same target host
-                _ = checkSameHost(response.geturl(), url)
+            # flag to know if we are dealing with the same target host
+            _ = checkSameHost(response.geturl(), url)
 
-                if conf.scope:
-                    if not re.search(conf.scope, url, re.I):
-                        continue
-                elif not _:
-                    continue
-                else:
-                    target = (url, method, data, conf.cookie, None)
-                    retVal.add(target)
-    else:
+            if data:
+                data = data.lstrip("&=").rstrip('&')
+
+            if conf.scope and not re.search(conf.scope, url, re.I):
+                continue
+            elif data and not re.sub(r"(%s)=[^&]*&?" % '|'.join(IGNORE_PARAMETERS), "", data):
+                continue
+            elif not _:
+                continue
+            else:
+                target = (url, method, data, conf.cookie, None)
+                retVal.add(target)
+
+    for match in re.finditer(r"\.post\(['\"]([^'\"]*)['\"],\s*\{([^}]*)\}", content):
+        url = _urllib.parse.urljoin(url, htmlUnescape(match.group(1)))
+        data = ""
+
+        for name, value in re.findall(r"['\"]?(\w+)['\"]?\s*:\s*(['\"][^'\"]+)?", match.group(2)):
+            data += "%s=%s%s" % (name, value, DEFAULT_GET_POST_DELIMITER)
+
+        data = data.rstrip(DEFAULT_GET_POST_DELIMITER)
+        retVal.add((url, HTTPMETHOD.POST, data, conf.cookie, None))
+
+    for match in re.finditer(r"(?s)(\w+)\.open\(['\"]POST['\"],\s*['\"]([^'\"]+)['\"]\).*?\1\.send\(([^)]+)\)", content):
+        url = _urllib.parse.urljoin(url, htmlUnescape(match.group(2)))
+        data = match.group(3)
+
+        data = re.sub(r"\s*\+\s*[^\s'\"]+|[^\s'\"]+\s*\+\s*", "", data)
+
+        data = data.strip("['\"]")
+        retVal.add((url, HTTPMETHOD.POST, data, conf.cookie, None))
+
+    if not retVal and not conf.crawlDepth:
         errMsg = "there were no forms found at the given target URL"
         if raise_:
             raise SqlmapGenericException(errMsg)
@@ -4665,18 +4758,19 @@ def decodeDbmsHexValue(value, raw=False):
             else:
                 retVal = decodeHex(value)
 
-            if not kb.binaryField and not raw:
-                if Backend.isDbms(DBMS.MSSQL) and value.startswith("0x"):
-                    try:
-                        retVal = retVal.decode("utf-16-le")
-                    except UnicodeDecodeError:
-                        pass
+            if not raw:
+                if not kb.binaryField:
+                    if Backend.isDbms(DBMS.MSSQL) and value.startswith("0x"):
+                        try:
+                            retVal = retVal.decode("utf-16-le")
+                        except UnicodeDecodeError:
+                            pass
 
-                elif Backend.getIdentifiedDbms() in (DBMS.HSQLDB, DBMS.H2):
-                    try:
-                        retVal = retVal.decode("utf-16-be")
-                    except UnicodeDecodeError:
-                        pass
+                    elif Backend.getIdentifiedDbms() in (DBMS.HSQLDB, DBMS.H2):
+                        try:
+                            retVal = retVal.decode("utf-16-be")
+                        except UnicodeDecodeError:
+                            pass
 
                 if not isinstance(retVal, six.text_type):
                     retVal = getUnicode(retVal, conf.encoding or UNICODE_ENCODING)
@@ -4830,7 +4924,7 @@ def prioritySortColumns(columns):
     """
 
     def _(column):
-        return column and "id" in column.lower()
+        return column and re.search(r"^id|id$", column, re.I) is not None
 
     return sorted(sorted(columns, key=len), key=functools.cmp_to_key(lambda x, y: -1 if _(x) and not _(y) else 1 if not _(x) and _(y) else 0))
 
@@ -4976,7 +5070,7 @@ def parseRequestFile(reqFile, checkParams=True):
                     port, request = match.groups()
                     try:
                         request = decodeBase64(request, binary=False)
-                    except binascii.Error:
+                    except (binascii.Error, TypeError):
                         continue
                     _ = re.search(r"%s:.+" % re.escape(HTTP_HEADER.HOST), request)
                     if _:

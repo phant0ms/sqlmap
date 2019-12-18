@@ -257,6 +257,9 @@ def _setRequestParams():
             kb.processUserMarks = True
 
     for place, value in ((PLACE.URI, conf.url), (PLACE.CUSTOM_POST, conf.data), (PLACE.CUSTOM_HEADER, str(conf.httpHeaders))):
+        if place == PLACE.CUSTOM_HEADER and any((conf.forms, conf.crawlDepth)):
+            continue
+
         _ = re.sub(PROBLEMATIC_CUSTOM_INJECTION_PATTERNS, "", value or "") if place == PLACE.CUSTOM_HEADER else value or ""
         if kb.customInjectionMark in _:
             if kb.processUserMarks is None:
@@ -561,16 +564,18 @@ def _setResultsFile():
         return
 
     if not conf.resultsFP:
-        conf.resultsFilename = os.path.join(paths.SQLMAP_OUTPUT_PATH, time.strftime(RESULTS_FILE_FORMAT).lower())
+        conf.resultsFile = conf.resultsFile or os.path.join(paths.SQLMAP_OUTPUT_PATH, time.strftime(RESULTS_FILE_FORMAT).lower())
+        found = os.path.exists(conf.resultsFile)
+
         try:
-            conf.resultsFP = openFile(conf.resultsFilename, "a", UNICODE_ENCODING, buffering=0)
+            conf.resultsFP = openFile(conf.resultsFile, "a", UNICODE_ENCODING, buffering=0)
         except (OSError, IOError) as ex:
             try:
-                warnMsg = "unable to create results file '%s' ('%s'). " % (conf.resultsFilename, getUnicode(ex))
-                handle, conf.resultsFilename = tempfile.mkstemp(prefix=MKSTEMP_PREFIX.RESULTS, suffix=".csv")
+                warnMsg = "unable to create results file '%s' ('%s'). " % (conf.resultsFile, getUnicode(ex))
+                handle, conf.resultsFile = tempfile.mkstemp(prefix=MKSTEMP_PREFIX.RESULTS, suffix=".csv")
                 os.close(handle)
-                conf.resultsFP = openFile(conf.resultsFilename, "w+", UNICODE_ENCODING, buffering=0)
-                warnMsg += "Using temporary file '%s' instead" % conf.resultsFilename
+                conf.resultsFP = openFile(conf.resultsFile, "w+", UNICODE_ENCODING, buffering=0)
+                warnMsg += "Using temporary file '%s' instead" % conf.resultsFile
                 logger.warn(warnMsg)
             except IOError as _:
                 errMsg = "unable to write to the temporary directory ('%s'). " % _
@@ -579,9 +584,10 @@ def _setResultsFile():
                 errMsg += "create temporary files and/or directories"
                 raise SqlmapSystemException(errMsg)
 
-        conf.resultsFP.writelines("Target URL,Place,Parameter,Technique(s),Note(s)%s" % os.linesep)
+        if not found:
+            conf.resultsFP.writelines("Target URL,Place,Parameter,Technique(s),Note(s)%s" % os.linesep)
 
-        logger.info("using '%s' as the CSV results file in multiple targets mode" % conf.resultsFilename)
+        logger.info("using '%s' as the CSV results file in multiple targets mode" % conf.resultsFile)
 
 def _createFilesDir():
     """

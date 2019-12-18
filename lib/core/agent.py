@@ -5,7 +5,6 @@ Copyright (c) 2006-2019 sqlmap developers (http://sqlmap.org/)
 See the file 'LICENSE' for copying permission
 """
 
-import base64
 import re
 
 from lib.core.common import Backend
@@ -27,6 +26,7 @@ from lib.core.common import unArrayizeValue
 from lib.core.common import urlencode
 from lib.core.common import zeroDepthSearch
 from lib.core.compat import xrange
+from lib.core.convert import encodeBase64
 from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import kb
@@ -50,6 +50,7 @@ from lib.core.settings import PAYLOAD_DELIMITER
 from lib.core.settings import REPLACEMENT_MARKER
 from lib.core.settings import SINGLE_QUOTE_MARKER
 from lib.core.settings import SLEEP_TIME_MARKER
+from lib.core.settings import UNICODE_ENCODING
 from lib.core.unescaper import unescaper
 from thirdparty import six
 
@@ -120,7 +121,7 @@ class Agent(object):
             paramString = origValue
             origValue = origValue.split(kb.customInjectionMark)[0]
             if kb.postHint in (POST_HINT.SOAP, POST_HINT.XML):
-                origValue = origValue.split('>')[-1]
+                origValue = re.split(r"['\">]", origValue)[-1]
             elif kb.postHint in (POST_HINT.JSON, POST_HINT.JSON_LIKE):
                 origValue = extractRegexResult(r"(?s)\"\s*:\s*(?P<result>\d+\Z)", origValue) or extractRegexResult(r'(?s)[\s:]*(?P<result>[^"\[,]+\Z)', origValue)
             else:
@@ -170,17 +171,21 @@ class Agent(object):
 
         if re.sub(r" \(.+", "", parameter) in conf.base64Parameter:
             # TODO: support for POST_HINT
-            newValue = base64.b64encode(newValue)
-            origValue = base64.b64encode(origValue)
+            newValue = encodeBase64(newValue, binary=False, encoding=conf.encoding or UNICODE_ENCODING)
+            origValue = encodeBase64(origValue, binary=False, encoding=conf.encoding or UNICODE_ENCODING)
 
         if place in (PLACE.URI, PLACE.CUSTOM_POST, PLACE.CUSTOM_HEADER):
             _ = "%s%s" % (origValue, kb.customInjectionMark)
+
             if kb.postHint == POST_HINT.JSON and not isNumber(newValue) and '"%s"' % _ not in paramString:
-                newValue = '"%s"' % newValue
+                newValue = '"%s"' % self.addPayloadDelimiters(newValue)
             elif kb.postHint == POST_HINT.JSON_LIKE and not isNumber(newValue) and "'%s'" % _ not in paramString:
-                newValue = "'%s'" % newValue
+                newValue = "'%s'" % self.addPayloadDelimiters(newValue)
+            else:
+                newValue = self.addPayloadDelimiters(newValue)
+
             newValue = newValue.replace(kb.customInjectionMark, REPLACEMENT_MARKER)
-            retVal = paramString.replace(_, self.addPayloadDelimiters(newValue))
+            retVal = paramString.replace(_, newValue)
             retVal = retVal.replace(kb.customInjectionMark, "").replace(REPLACEMENT_MARKER, kb.customInjectionMark)
         elif BOUNDED_INJECTION_MARKER in paramDict[parameter]:
             retVal = paramString.replace("%s%s" % (origValue, BOUNDED_INJECTION_MARKER), self.addPayloadDelimiters(newValue))
@@ -242,7 +247,7 @@ class Agent(object):
 
         # If we are replacing (<where>) the parameter original value with
         # our payload do not prepend with the prefix
-        if where == PAYLOAD.WHERE.REPLACE:
+        if where == PAYLOAD.WHERE.REPLACE and not conf.prefix:  # Note: https://github.com/sqlmapproject/sqlmap/issues/4030
             query = ""
 
         # If the technique is stacked queries (<stype>) do not put a space
@@ -446,7 +451,7 @@ class Agent(object):
                 else:
                     nulledCastedField = rootQuery.isnull.query % nulledCastedField
 
-            kb.binaryField = conf.binaryFields and field in conf.binaryFields.split(',')
+            kb.binaryField = conf.binaryFields and field in conf.binaryFields
             if conf.hexConvert or kb.binaryField:
                 nulledCastedField = self.hexConvertField(nulledCastedField)
 
@@ -1110,7 +1115,12 @@ class Agent(object):
 
     def whereQuery(self, query):
         if conf.dumpWhere and query:
-            prefix, suffix = query.split(" ORDER BY ") if " ORDER BY " in query else (query, "")
+            match = re.search(r" (LIMIT|ORDER).+", query, re.I)
+            if match:
+                suffix = match.group(0)
+                prefix = query[:-len(suffix)]
+            else:
+                prefix, suffix = query, ""
 
             if conf.tbl and "%s)" % conf.tbl.upper() in prefix.upper():
                 prefix = re.sub(r"(?i)%s\)" % re.escape(conf.tbl), "%s WHERE %s)" % (conf.tbl, conf.dumpWhere), prefix)
@@ -1119,7 +1129,9 @@ class Agent(object):
             else:
                 prefix += " WHERE %s" % conf.dumpWhere
 
-            query = "%s ORDER BY %s" % (prefix, suffix) if suffix else prefix
+            query = prefix
+            if suffix:
+                query += suffix
 
         return query
 

@@ -16,7 +16,7 @@ import optparse
 import os
 import warnings
 
-warnings.filterwarnings(action="ignore", message=".*was already imported", category=UserWarning)
+warnings.filterwarnings(action="ignore", category=UserWarning)
 warnings.filterwarnings(action="ignore", category=DeprecationWarning)
 
 from lib.core.common import getUnicode
@@ -63,9 +63,9 @@ def main():
     (args, _) = apiparser.parse_args()
 
     # Start the client or the server
-    if args.server is True:
+    if args.server:
         server(args.host, args.port, adapter=args.adapter, username=args.username, password=args.password)
-    elif args.client is True:
+    elif args.client:
         client(args.host, args.port, username=args.username, password=args.password)
     else:
         apiparser.print_help()

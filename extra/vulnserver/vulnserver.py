@@ -9,14 +9,17 @@ See the file 'LICENSE' for copying permission
 
 from __future__ import print_function
 
+import json
 import re
 import sqlite3
 import sys
 import threading
 import traceback
 
-if sys.version_info >= (3, 0):
-    from http.client import FOUND
+PY3 = sys.version_info >= (3, 0)
+UNICODE_ENCODING = "utf-8"
+
+if PY3:
     from http.client import INTERNAL_SERVER_ERROR
     from http.client import NOT_FOUND
     from http.client import OK
@@ -28,7 +31,6 @@ if sys.version_info >= (3, 0):
 else:
     from BaseHTTPServer import BaseHTTPRequestHandler
     from BaseHTTPServer import HTTPServer
-    from httplib import FOUND
     from httplib import INTERNAL_SERVER_ERROR
     from httplib import NOT_FOUND
     from httplib import OK
@@ -95,48 +97,82 @@ class ReqHandler(BaseHTTPRequestHandler):
                 self.send_response(INTERNAL_SERVER_ERROR)
                 self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write("CLOUDFLARE_ERROR_500S_BOX".encode("utf8"))
+                self.wfile.write("CLOUDFLARE_ERROR_500S_BOX".encode(UNICODE_ENCODING))
                 return
 
         if hasattr(self, "data"):
-            params.update(parse_qs(self.data))
+            if self.data.startswith('{') and self.data.endswith('}'):
+                params.update(json.loads(self.data))
+            elif self.data.startswith('<') and self.data.endswith('>'):
+                params.update(dict((_[0], _[1].replace("&apos;", "'").replace("&quot;", '"').replace("&lt;", '<').replace("&gt;", '>').replace("&amp;", '&')) for _ in re.findall(r'name="([^"]+)" value="([^"]*)"', self.data)))
+            else:
+                params.update(parse_qs(self.data))
+
+        for name in self.headers:
+            params[name.lower()] = self.headers[name]
+
+        if "cookie" in params:
+            for part in params["cookie"].split(';'):
+                part = part.strip()
+                if '=' in part:
+                    name, value = part.split('=', 1)
+                    params[name.strip()] = unquote_plus(value.strip())
 
         for key in params:
-            if params[key]:
+            if params[key] and isinstance(params[key], (tuple, list)):
                 params[key] = params[key][-1]
 
         self.url, self.params = path, params
 
         if self.url == '/':
-            if "id" not in params:
-                self.send_response(FOUND)
-                self.send_header("Connection", "close")
-                self.send_header("Location", "/?id=1")
-                self.end_headers()
-            else:
+
+            if not any(_ in self.params for _ in ("id", "query")):
                 self.send_response(OK)
-                self.send_header("Content-type", "text/html")
+                self.send_header("Content-type", "text/html; charset=%s" % UNICODE_ENCODING)
                 self.send_header("Connection", "close")
                 self.end_headers()
+                self.wfile.write(b"<html><p><h3>GET:</h3><a href='/?id=1'>link</a></p><hr><p><h3>POST:</h3><form method='post'>ID: <input type='text' name='id'><input type='submit' value='Submit'></form></p></html>")
+            else:
+                code, output = OK, ""
 
                 try:
+
+                    if self.params.get("echo", ""):
+                        output += "%s<br>" % self.params["echo"]
+
                     with _lock:
-                        _cursor.execute("SELECT * FROM users WHERE id=%s LIMIT 0, 1" % self.params.get("id", ""))
+                        if "query" in self.params:
+                            _cursor.execute(self.params["query"])
+                        elif "id" in self.params:
+                            _cursor.execute("SELECT * FROM users WHERE id=%s LIMIT 0, 1" % self.params["id"])
                         results = _cursor.fetchall()
 
-                    output = "<b>SQL results:</b>\n"
+                    output += "<b>SQL results:</b>\n"
                     output += "<table border=\"1\">\n"
+
                     for row in results:
                         output += "<tr>"
                         for value in row:
                             output += "<td>%s</td>" % value
                         output += "</tr>\n"
+
                     output += "</table>\n"
                     output += "</body></html>"
                 except Exception as ex:
+                    code = INTERNAL_SERVER_ERROR
                     output = "%s: %s" % (re.search(r"'([^']+)'", str(type(ex))).group(1), ex)
 
-                self.wfile.write(output.encode("utf8"))
+                self.send_response(code)
+
+                self.send_header("Content-type", "text/html")
+                self.send_header("Connection", "close")
+
+                if self.raw_requestline.startswith(b"HEAD"):
+                    self.send_header("Content-Length", str(len(output)))
+                    self.end_headers()
+                else:
+                    self.end_headers()
+                    self.wfile.write(output if isinstance(output, bytes) else output.encode(UNICODE_ENCODING))
         else:
             self.send_response(NOT_FOUND)
             self.send_header("Connection", "close")
@@ -145,11 +181,17 @@ class ReqHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.do_REQUEST()
 
+    def do_PUT(self):
+        self.do_REQUEST()
+
+    def do_HEAD(self):
+        self.do_REQUEST()
+
     def do_POST(self):
         length = int(self.headers.get("Content-length", 0))
         if length:
             data = self.rfile.read(length)
-            data = unquote_plus(data.decode("utf8"))
+            data = unquote_plus(data.decode(UNICODE_ENCODING))
             self.data = data
         self.do_REQUEST()
 

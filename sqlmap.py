@@ -34,7 +34,10 @@ try:
     import warnings
 
     warnings.filterwarnings(action="ignore", message=".*was already imported", category=UserWarning)
+    warnings.filterwarnings(action="ignore", message=".*using a very old release", category=UserWarning)
+    warnings.filterwarnings(action="ignore", message=".*default buffer size will be used", category=RuntimeWarning)
     warnings.filterwarnings(action="ignore", category=DeprecationWarning)
+    warnings.filterwarnings(action="ignore", category=UserWarning, module="psycopg2")
 
     from lib.core.data import logger
 
@@ -45,6 +48,7 @@ try:
     from lib.core.common import dataToStdout
     from lib.core.common import filterNone
     from lib.core.common import getDaysFromLastUpdate
+    from lib.core.common import getFileItems
     from lib.core.common import getSafeExString
     from lib.core.common import maskSensitiveData
     from lib.core.common import openFile
@@ -57,6 +61,7 @@ try:
     from lib.core.common import MKSTEMP_PREFIX
     from lib.core.common import setColor
     from lib.core.common import unhandledExceptionMessage
+    from lib.core.compat import xrange
     from lib.core.exception import SqlmapBaseException
     from lib.core.exception import SqlmapShellQuitException
     from lib.core.exception import SqlmapSilentQuitException
@@ -73,6 +78,7 @@ try:
     from lib.core.settings import UNICODE_ENCODING
     from lib.core.settings import VERSION
     from lib.parse.cmdline import cmdLineParser
+    from lib.utils.crawler import crawl
     from thirdparty import six
 except KeyboardInterrupt:
     errMsg = "user aborted"
@@ -135,7 +141,8 @@ def main():
         banner()
 
         # Store original command line options for possible later restoration
-        cmdLineOptions.update(cmdLineParser().__dict__)
+        args = cmdLineParser()
+        cmdLineOptions.update(args.__dict__ if hasattr(args, "__dict__") else args)
         initOptions(cmdLineOptions)
 
         if checkPipedInput():
@@ -177,7 +184,32 @@ def main():
                     profile()
                 else:
                     try:
-                        start()
+                        if conf.crawlDepth and conf.bulkFile:
+                            targets = getFileItems(conf.bulkFile)
+
+                            for i in xrange(len(targets)):
+                                try:
+                                    kb.targets.clear()
+                                    target = targets[i]
+
+                                    if not re.search(r"(?i)\Ahttp[s]*://", target):
+                                        target = "http://%s" % target
+
+                                    infoMsg = "starting crawler for target URL '%s' (%d/%d)" % (target, i + 1, len(targets))
+                                    logger.info(infoMsg)
+
+                                    crawl(target)
+                                except Exception as ex:
+                                    if not isinstance(ex, SqlmapUserQuitException):
+                                        errMsg = "problem occurred while crawling '%s' ('%s')" % (target, getSafeExString(ex))
+                                        logger.error(errMsg)
+                                    else:
+                                        raise
+                                else:
+                                    if kb.targets:
+                                        start()
+                        else:
+                            start()
                     except Exception as ex:
                         os._exitcode = 1
 
@@ -223,32 +255,7 @@ def main():
         excMsg = traceback.format_exc()
         valid = checkIntegrity()
 
-        if valid is False:
-            errMsg = "code integrity check failed (turning off automatic issue creation). "
-            errMsg += "You should retrieve the latest development version from official GitHub "
-            errMsg += "repository at '%s'" % GIT_PAGE
-            logger.critical(errMsg)
-            print()
-            dataToStdout(excMsg)
-            raise SystemExit
-
-        elif any(_ in excMsg for _ in ("tamper/", "waf/")):
-            logger.critical(errMsg)
-            print()
-            dataToStdout(excMsg)
-            raise SystemExit
-
-        elif any(_ in excMsg for _ in ("ImportError", "ModuleNotFoundError", "Can't find file for module")):
-            errMsg = "invalid runtime environment ('%s')" % excMsg.split("Error: ")[-1].strip()
-            logger.critical(errMsg)
-            raise SystemExit
-
-        elif all(_ in excMsg for _ in ("SyntaxError: Non-ASCII character", ".py on line", "but no encoding declared")) or any(_ in excMsg for _ in ("source code string cannot contain null bytes", "No module named")):
-            errMsg = "invalid runtime environment ('%s')" % excMsg.split("Error: ")[-1].strip()
-            logger.critical(errMsg)
-            raise SystemExit
-
-        elif any(_ in excMsg for _ in ("MemoryError", "Cannot allocate memory")):
+        if any(_ in excMsg for _ in ("MemoryError", "Cannot allocate memory")):
             errMsg = "memory exhaustion detected"
             logger.critical(errMsg)
             raise SystemExit
@@ -263,10 +270,8 @@ def main():
             logger.critical(errMsg)
             raise SystemExit
 
-        elif all(_ in excMsg for _ in ("No such file", "_'")):
-            errMsg = "corrupted installation detected ('%s'). " % excMsg.strip().split('\n')[-1]
-            errMsg += "You should retrieve the latest development version from official GitHub "
-            errMsg += "repository at '%s'" % GIT_PAGE
+        elif all(_ in excMsg for _ in ("Access is denied", "subprocess", "metasploit")):
+            errMsg = "permission error occurred while running Metasploit"
             logger.critical(errMsg)
             raise SystemExit
 
@@ -336,15 +341,59 @@ def main():
             logger.critical(errMsg)
             raise SystemExit
 
+        elif all(_ in excMsg for _ in ("pymysql", "configparser")):
+            errMsg = "wrong initialization of pymsql detected (using Python3 dependencies)"
+            logger.critical(errMsg)
+            raise SystemExit
+
+        elif all(_ in excMsg for _ in ("window = tkinter.Tk()",)):
+            errMsg = "there has been a problem in initialization of GUI interface "
+            errMsg += "('%s')" % excMsg.strip().split('\n')[-1]
+            logger.critical(errMsg)
+            raise SystemExit
+
+        elif kb.get("dumpKeyboardInterrupt"):
+            raise SystemExit
+
+        elif any(_ in excMsg for _ in ("Broken pipe",)):
+            raise SystemExit
+
+        elif valid is False:
+            errMsg = "code integrity check failed (turning off automatic issue creation). "
+            errMsg += "You should retrieve the latest development version from official GitHub "
+            errMsg += "repository at '%s'" % GIT_PAGE
+            logger.critical(errMsg)
+            print()
+            dataToStdout(excMsg)
+            raise SystemExit
+
+        elif any(_ in excMsg for _ in ("tamper/", "waf/")):
+            logger.critical(errMsg)
+            print()
+            dataToStdout(excMsg)
+            raise SystemExit
+
+        elif any(_ in excMsg for _ in ("ImportError", "ModuleNotFoundError", "Can't find file for module")):
+            errMsg = "invalid runtime environment ('%s')" % excMsg.split("Error: ")[-1].strip()
+            logger.critical(errMsg)
+            raise SystemExit
+
+        elif all(_ in excMsg for _ in ("SyntaxError: Non-ASCII character", ".py on line", "but no encoding declared")) or any(_ in excMsg for _ in ("source code string cannot contain null bytes", "No module named")):
+            errMsg = "invalid runtime environment ('%s')" % excMsg.split("Error: ")[-1].strip()
+            logger.critical(errMsg)
+            raise SystemExit
+
+        elif all(_ in excMsg for _ in ("No such file", "_'")):
+            errMsg = "corrupted installation detected ('%s'). " % excMsg.strip().split('\n')[-1]
+            errMsg += "You should retrieve the latest development version from official GitHub "
+            errMsg += "repository at '%s'" % GIT_PAGE
+            logger.critical(errMsg)
+            raise SystemExit
+
         elif "'DictObject' object has no attribute '" in excMsg and all(_ in errMsg for _ in ("(fingerprinted)", "(identified)")):
             errMsg = "there has been a problem in enumeration. "
             errMsg += "Because of a considerable chance of false-positive case "
             errMsg += "you are advised to rerun with switch '--flush-session'"
-            logger.critical(errMsg)
-            raise SystemExit
-
-        elif all(_ in excMsg for _ in ("pymysql", "configparser")):
-            errMsg = "wrong initialization of pymsql detected (using Python3 dependencies)"
             logger.critical(errMsg)
             raise SystemExit
 
@@ -353,12 +402,6 @@ def main():
             errMsg = "one of your .pyc files are corrupted%s" % (" ('%s')" % match.group(1) if match else "")
             errMsg += ". Please delete .pyc files on your system to fix the problem"
             logger.critical(errMsg)
-            raise SystemExit
-
-        elif kb.get("dumpKeyboardInterrupt"):
-            raise SystemExit
-
-        elif any(_ in excMsg for _ in ("Broken pipe",)):
             raise SystemExit
 
         for match in re.finditer(r'File "(.+?)", line', excMsg):

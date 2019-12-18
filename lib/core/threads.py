@@ -73,6 +73,10 @@ def readInput(message, default=None, checkBatch=True, boolean=False):
     # It will be overwritten by original from lib.core.common
     pass
 
+def isDigit(value):
+    # It will be overwritten by original from lib.core.common
+    pass
+
 def getCurrentThreadData():
     """
     Returns current thread's local data
@@ -119,16 +123,18 @@ def runThreads(numThreads, threadFunction, cleanupFunction=None, forwardExceptio
     kb.threadException = False
     kb.technique = ThreadData.technique
 
-    if threadChoice and numThreads == 1 and not (kb.injection.data and not any(_ not in (PAYLOAD.TECHNIQUE.TIME, PAYLOAD.TECHNIQUE.STACKED) for _ in kb.injection.data)):
+    if threadChoice and conf.threads == numThreads == 1 and not (kb.injection.data and not any(_ not in (PAYLOAD.TECHNIQUE.TIME, PAYLOAD.TECHNIQUE.STACKED) for _ in kb.injection.data)):
         while True:
             message = "please enter number of threads? [Enter for %d (current)] " % numThreads
             choice = readInput(message, default=str(numThreads))
             if choice:
                 skipThreadCheck = False
+
                 if choice.endswith('!'):
                     choice = choice[:-1]
                     skipThreadCheck = True
-                if choice.isdigit():
+
+                if isDigit(choice):
                     if int(choice) > MAX_NUMBER_OF_THREADS and not skipThreadCheck:
                         errMsg = "maximum number of used threads is %d avoiding potential connection issues" % MAX_NUMBER_OF_THREADS
                         logger.critical(errMsg)
@@ -178,6 +184,12 @@ def runThreads(numThreads, threadFunction, cleanupFunction=None, forwardExceptio
         kb.prependFlag = False
         kb.threadContinue = False
         kb.threadException = True
+
+        if kb.lastCtrlCTime and (time.time() - kb.lastCtrlCTime < 1):
+            kb.multipleCtrlC = True
+            raise SqlmapUserQuitException("user aborted (Ctrl+C was pressed multiple times)")
+
+        kb.lastCtrlCTime = time.time()
 
         if numThreads > 1:
             logger.info("waiting for threads to finish%s" % (" (Ctrl+C was pressed)" if isinstance(ex, KeyboardInterrupt) else ""))

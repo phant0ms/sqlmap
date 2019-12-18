@@ -10,7 +10,6 @@ import time
 import types
 
 from lib.core.common import getHostHeader
-from lib.core.common import getSafeExString
 from lib.core.common import logHTTPTraffic
 from lib.core.common import readInput
 from lib.core.convert import getUnicode
@@ -47,7 +46,7 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
     def _ask_redirect_choice(self, redcode, redurl, method):
         with kb.locks.redirect:
             if kb.redirectChoice is None:
-                msg = "sqlmap got a %d redirect to " % redcode
+                msg = "got a %d redirect to " % redcode
                 msg += "'%s'. Do you want to follow? [Y/n] " % redurl
 
                 kb.redirectChoice = REDIRECTION.YES if readInput(msg, default='Y', boolean=True) else REDIRECTION.NO
@@ -74,10 +73,8 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
 
         try:
             content = fp.read(MAX_CONNECTION_TOTAL_SIZE)
-        except Exception as ex:
-            dbgMsg = "there was a problem while retrieving "
-            dbgMsg += "redirect response content ('%s')" % getSafeExString(ex)
-            logger.debug(dbgMsg)
+        except:  # e.g. IncompleteRead
+            content = ""
         finally:
             if content:
                 try:  # try to write it back to the read buffer so we could reuse it in further steps
@@ -170,7 +167,7 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
         threadData.lastRedirectURL = (threadData.lastRequestUID, redurl)
 
         result.redcode = code
-        result.redurl = redurl
+        result.redurl = getUnicode(redurl)
         return result
 
     http_error_301 = http_error_303 = http_error_307 = http_error_302

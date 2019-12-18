@@ -25,6 +25,7 @@ from lib.core.common import singleTimeLogMessage
 from lib.core.common import singleTimeWarnMessage
 from lib.core.common import unArrayizeValue
 from lib.core.common import unsafeSQLIdentificatorNaming
+from lib.core.convert import getConsoleLength
 from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import kb
@@ -77,7 +78,7 @@ class Entries(object):
                 errMsg += "the tables' columns"
                 raise SqlmapMissingMandatoryOptionException(errMsg)
 
-            if conf.exclude and conf.db in conf.exclude.split(','):
+            if conf.exclude and re.search(conf.exclude, conf.db, re.I) is not None:
                 infoMsg = "skipping database '%s'" % unsafeSQLIdentificatorNaming(conf.db)
                 singleTimeLogMessage(infoMsg)
                 return
@@ -111,7 +112,7 @@ class Entries(object):
             if kb.dumpKeyboardInterrupt:
                 break
 
-            if conf.exclude and tbl in conf.exclude.split(','):
+            if conf.exclude and re.search(conf.exclude, tbl, re.I) is not None:
                 infoMsg = "skipping table '%s'" % unsafeSQLIdentificatorNaming(tbl)
                 singleTimeLogMessage(infoMsg)
                 continue
@@ -144,7 +145,7 @@ class Entries(object):
                 colList = sorted(column for column in columns if column)
 
                 if conf.exclude:
-                    colList = [_ for _ in colList if _ not in conf.exclude.split(',')]
+                    colList = [_ for _ in colList if re.search(conf.exclude, _, re.I) is None]
 
                 if not colList:
                     warnMsg = "skipping table '%s'" % unsafeSQLIdentificatorNaming(tbl)
@@ -269,7 +270,7 @@ class Entries(object):
                                 else:
                                     colEntry = unArrayizeValue(entry[index]) if index < len(entry) else u''
 
-                                maxLen = max(len(column), len(DUMP_REPLACEMENTS.get(getUnicode(colEntry), getUnicode(colEntry))))
+                                maxLen = max(getConsoleLength(column), getConsoleLength(DUMP_REPLACEMENTS.get(getUnicode(colEntry), getUnicode(colEntry))))
 
                                 if maxLen > kb.data.dumpedTable[column]["length"]:
                                     kb.data.dumpedTable[column]["length"] = maxLen
@@ -490,7 +491,7 @@ class Entries(object):
                 conf.db = db
 
                 for table in tables:
-                    if conf.exclude and table in conf.exclude.split(','):
+                    if conf.exclude and re.search(conf.exclude, table, re.I) is not None:
                         infoMsg = "skipping table '%s'" % unsafeSQLIdentificatorNaming(table)
                         logger.info(infoMsg)
                         continue
@@ -506,7 +507,7 @@ class Entries(object):
                         logger.info(infoMsg)
 
     def dumpFoundColumn(self, dbs, foundCols, colConsider):
-        message = "do you want to dump entries? [Y/n] "
+        message = "do you want to dump found column(s) entries? [Y/n] "
 
         if not readInput(message, default='Y', boolean=True):
             return
@@ -561,7 +562,7 @@ class Entries(object):
                 colList = [_ for _ in columns if _]
 
                 if conf.exclude:
-                    colList = [_ for _ in colList if _ not in conf.exclude.split(',')]
+                    colList = [_ for _ in colList if re.search(conf.exclude, _, re.I) is None]
 
                 conf.col = ','.join(colList)
                 kb.data.cachedColumns = {}
@@ -573,7 +574,7 @@ class Entries(object):
                     conf.dumper.dbTableValues(data)
 
     def dumpFoundTables(self, tables):
-        message = "do you want to dump tables' entries? [Y/n] "
+        message = "do you want to dump found table(s) entries? [Y/n] "
 
         if not readInput(message, default='Y', boolean=True):
             return

@@ -98,6 +98,7 @@ from lib.core.settings import HTTP_ACCEPT_ENCODING_HEADER_VALUE
 from lib.core.settings import HTTP_ACCEPT_HEADER_VALUE
 from lib.core.settings import IPS_WAF_CHECK_PAYLOAD
 from lib.core.settings import IS_WIN
+from lib.core.settings import JAVASCRIPT_HREF_REGEX
 from lib.core.settings import LARGE_READ_TRIM_MARKER
 from lib.core.settings import MAX_CONNECTION_READ_SIZE
 from lib.core.settings import MAX_CONNECTIONS_REGEX
@@ -118,6 +119,7 @@ from lib.core.settings import UNENCODED_ORIGINAL_VALUE
 from lib.core.settings import UNICODE_ENCODING
 from lib.core.settings import URI_HTTP_HEADER
 from lib.core.settings import WARN_TIME_STDEV
+from lib.core.settings import WEBSOCKET_INITIAL_TIMEOUT
 from lib.request.basic import decodePage
 from lib.request.basic import forgeHeaders
 from lib.request.basic import processResponse
@@ -450,10 +452,25 @@ class Connect(object):
 
             if webSocket:
                 ws = websocket.WebSocket()
-                ws.settimeout(timeout)
+                ws.settimeout(WEBSOCKET_INITIAL_TIMEOUT if kb.webSocketRecvCount is None else timeout)
                 ws.connect(url, header=("%s: %s" % _ for _ in headers.items() if _[0] not in ("Host",)), cookie=cookie)  # WebSocket will add Host field of headers automatically
                 ws.send(urldecode(post or ""))
-                page = ws.recv()
+
+                _page = []
+
+                if kb.webSocketRecvCount is None:
+                    while True:
+                        try:
+                            _page.append(ws.recv())
+                        except websocket.WebSocketTimeoutException:
+                            kb.webSocketRecvCount = len(_page)
+                            break
+                else:
+                    for i in xrange(max(1, kb.webSocketRecvCount)):
+                        _page.append(ws.recv())
+
+                page = "\n".join(_page)
+
                 ws.close()
                 code = ws.status
                 status = _http_client.responses[code]
@@ -549,7 +566,7 @@ class Connect(object):
                     code = None
                     responseHeaders = {}
 
-                page = decodePage(page, responseHeaders.get(HTTP_HEADER.CONTENT_ENCODING), responseHeaders.get(HTTP_HEADER.CONTENT_TYPE))
+                page = decodePage(page, responseHeaders.get(HTTP_HEADER.CONTENT_ENCODING), responseHeaders.get(HTTP_HEADER.CONTENT_TYPE), percentDecode=not crawling)
                 status = getUnicode(conn.msg) if conn and getattr(conn, "msg", None) else None
 
             kb.connErrorCounter = 0
@@ -563,10 +580,17 @@ class Connect(object):
                     debugMsg = "got HTML meta refresh header"
                     logger.debug(debugMsg)
 
+                if not refresh:
+                    refresh = extractRegexResult(JAVASCRIPT_HREF_REGEX, page)
+
+                    if refresh:
+                        debugMsg = "got Javascript redirect request"
+                        logger.debug(debugMsg)
+
                 if refresh:
                     if kb.alwaysRefresh is None:
-                        msg = "sqlmap got a refresh request "
-                        msg += "(redirect like response common to login pages). "
+                        msg = "got a refresh request "
+                        msg += "(redirect like response common to login pages) to '%s'. " % refresh
                         msg += "Do you want to apply the refresh "
                         msg += "from now on (or stay on the original page)? [Y/n]"
 
@@ -620,7 +644,7 @@ class Connect(object):
                 responseHeaders = ex.info()
                 responseHeaders[URI_HTTP_HEADER] = ex.geturl()
                 patchHeaders(responseHeaders)
-                page = decodePage(page, responseHeaders.get(HTTP_HEADER.CONTENT_ENCODING), responseHeaders.get(HTTP_HEADER.CONTENT_TYPE))
+                page = decodePage(page, responseHeaders.get(HTTP_HEADER.CONTENT_ENCODING), responseHeaders.get(HTTP_HEADER.CONTENT_TYPE), percentDecode=not crawling)
             except socket.timeout:
                 warnMsg = "connection timed out while trying "
                 warnMsg += "to get error page information (%d)" % ex.code
@@ -690,7 +714,7 @@ class Connect(object):
                         else:
                             raise SqlmapConnectionException(warnMsg)
                 else:
-                    debugMsg = "got HTTP error code: %d (%s)" % (code, status)
+                    debugMsg = "got HTTP error code: %d ('%s')" % (code, status)
                     logger.debug(debugMsg)
 
         except (_urllib.error.URLError, socket.error, socket.timeout, _http_client.HTTPException, struct.error, binascii.Error, ProxyError, SqlmapCompressionException, WebSocketException, TypeError, ValueError, OverflowError):
@@ -839,7 +863,7 @@ class Connect(object):
 
     @staticmethod
     @stackedmethod
-    def queryPage(value=None, place=None, content=False, getRatioValue=False, silent=False, method=None, timeBasedCompare=False, noteResponseTime=True, auxHeaders=None, response=False, raise404=None, removeReflection=True, disableTampering=False):
+    def queryPage(value=None, place=None, content=False, getRatioValue=False, silent=False, method=None, timeBasedCompare=False, noteResponseTime=True, auxHeaders=None, response=False, raise404=None, removeReflection=True, disableTampering=False, ignoreSecondOrder=False):
         """
         This method calls a function to get the target URL page content
         and returns its page ratio (0 <= ratio <= 1) or a boolean value
@@ -924,7 +948,7 @@ class Connect(object):
                 if kb.postHint in (POST_HINT.SOAP, POST_HINT.XML):
                     # payloads in SOAP/XML should have chars > and < replaced
                     # with their HTML encoded counterparts
-                    payload = payload.replace('>', "&gt;").replace('<', "&lt;")
+                    payload = payload.replace('&', "&amp;").replace('>', "&gt;").replace('<', "&lt;").replace('"', "&quot;").replace("'", "&apos;")  # Reference: https://stackoverflow.com/a/1091953
                 elif kb.postHint == POST_HINT.JSON:
                     payload = escapeJsonValue(payload)
                 elif kb.postHint == POST_HINT.JSON_LIKE:
@@ -1030,11 +1054,11 @@ class Connect(object):
 
                 match = re.search(r"%s=[^&]*" % re.escape(parameter), paramString, re.I)
                 if match:
-                    retVal = re.sub("(?i)%s" % re.escape(match.group(0)), ("%s=%s" % (parameter, newValue)).replace('\\', r'\\'), paramString)
+                    retVal = re.sub(r"(?i)%s" % re.escape(match.group(0)), ("%s=%s" % (parameter, newValue)).replace('\\', r'\\'), paramString)
                 else:
                     match = re.search(r"(%s[\"']:[\"'])([^\"']+)" % re.escape(parameter), paramString, re.I)
                     if match:
-                        retVal = re.sub("(?i)%s" % re.escape(match.group(0)), "%s%s" % (match.group(1), newValue), paramString)
+                        retVal = re.sub(r"(?i)%s" % re.escape(match.group(0)), "%s%s" % (match.group(1), newValue), paramString)
 
                 return retVal
 
@@ -1339,17 +1363,18 @@ class Connect(object):
                     warnMsg += "behavior in custom WAF/IPS solutions"
                 singleTimeWarnMessage(warnMsg)
 
-        if conf.secondUrl:
-            page, headers, code = Connect.getPage(url=conf.secondUrl, cookie=cookie, ua=ua, silent=silent, auxHeaders=auxHeaders, response=response, raise404=False, ignoreTimeout=timeBasedCompare, refreshing=True)
-        elif kb.secondReq and IPS_WAF_CHECK_PAYLOAD not in _urllib.parse.unquote(value or ""):
-            def _(value):
-                if kb.customInjectionMark in (value or ""):
-                    if payload is None:
-                        value = value.replace(kb.customInjectionMark, "")
-                    else:
-                        value = re.sub(r"\w*%s" % re.escape(kb.customInjectionMark), payload, value)
-                return value
-            page, headers, code = Connect.getPage(url=_(kb.secondReq[0]), post=_(kb.secondReq[2]), method=kb.secondReq[1], cookie=kb.secondReq[3], silent=silent, auxHeaders=dict(auxHeaders, **dict(kb.secondReq[4])), response=response, raise404=False, ignoreTimeout=timeBasedCompare, refreshing=True)
+        if not ignoreSecondOrder:
+            if conf.secondUrl:
+                page, headers, code = Connect.getPage(url=conf.secondUrl, cookie=cookie, ua=ua, silent=silent, auxHeaders=auxHeaders, response=response, raise404=False, ignoreTimeout=timeBasedCompare, refreshing=True)
+            elif kb.secondReq and IPS_WAF_CHECK_PAYLOAD not in _urllib.parse.unquote(value or ""):
+                def _(value):
+                    if kb.customInjectionMark in (value or ""):
+                        if payload is None:
+                            value = value.replace(kb.customInjectionMark, "")
+                        else:
+                            value = re.sub(r"\w*%s" % re.escape(kb.customInjectionMark), payload, value)
+                    return value
+                page, headers, code = Connect.getPage(url=_(kb.secondReq[0]), post=_(kb.secondReq[2]), method=kb.secondReq[1], cookie=kb.secondReq[3], silent=silent, auxHeaders=dict(auxHeaders, **dict(kb.secondReq[4])), response=response, raise404=False, ignoreTimeout=timeBasedCompare, refreshing=True)
 
         threadData.lastQueryDuration = calculateDeltaSeconds(start)
 

@@ -9,11 +9,13 @@ import os
 
 from lib.core.common import Backend
 from lib.core.common import getSafeExString
+from lib.core.common import isDigit
 from lib.core.common import isStackingAvailable
 from lib.core.common import openFile
 from lib.core.common import readInput
 from lib.core.common import runningAsAdmin
 from lib.core.data import conf
+from lib.core.data import kb
 from lib.core.data import logger
 from lib.core.enums import DBMS
 from lib.core.enums import OS
@@ -78,7 +80,20 @@ class Takeover(Abstraction, Metasploit, ICMPsh, Registry):
             raise SqlmapNotVulnerableException(errMsg)
 
         self.getRemoteTempPath()
-        self.initEnv(web=web)
+
+        try:
+            self.initEnv(web=web)
+        except SqlmapFilePathException:
+            if not web and not conf.direct:
+                infoMsg = "falling back to web backdoor method..."
+                logger.info(infoMsg)
+
+                web = True
+                kb.udfFail = True
+
+                self.initEnv(web=web)
+            else:
+                raise
 
         if not web or (web and self.webBackdoorUrl is not None):
             self.shell()
@@ -101,7 +116,7 @@ class Takeover(Abstraction, Metasploit, ICMPsh, Registry):
             while True:
                 tunnel = readInput(msg, default='1')
 
-                if tunnel.isdigit() and int(tunnel) in (1, 2):
+                if isDigit(tunnel) and int(tunnel) in (1, 2):
                     tunnel = int(tunnel)
                     break
 
@@ -172,7 +187,7 @@ class Takeover(Abstraction, Metasploit, ICMPsh, Registry):
                     while True:
                         choice = readInput(msg, default='1')
 
-                        if choice.isdigit() and int(choice) in (1, 2):
+                        if isDigit(choice) and int(choice) in (1, 2):
                             choice = int(choice)
                             break
 
