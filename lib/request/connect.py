@@ -57,6 +57,7 @@ from lib.core.common import unsafeVariableNaming
 from lib.core.common import urldecode
 from lib.core.common import urlencode
 from lib.core.common import wasLastResponseDelayed
+from lib.core.common import save_request_log
 from lib.core.compat import patchHeaders
 from lib.core.compat import xrange
 from lib.core.convert import getBytes
@@ -133,6 +134,8 @@ from thirdparty.six import unichr as _unichr
 from thirdparty.six.moves import http_client as _http_client
 from thirdparty.six.moves import urllib as _urllib
 from thirdparty.socks.socks import ProxyError
+
+from lib.core.log_pvs import httpClientLogger
 
 class Connect(object):
     """
@@ -536,7 +539,9 @@ class Connect(object):
                             for char in (r"\r", r"\n"):
                                 cookie.value = re.sub(r"(%s)([^ \t])" % char, r"\g<1>\t\g<2>", cookie.value)
 
-                conn = _urllib.request.urlopen(req)
+                conn = _urllib.request.urlopen(req) #发包
+
+                save_request_log(req.full_url, conn.status) #保存扫描日志 
 
                 if not kb.authHeader and getRequestHeader(req, HTTP_HEADER.AUTHORIZATION) and (conf.authType or "").lower() == AUTH_TYPE.BASIC.lower():
                     kb.authHeader = getRequestHeader(req, HTTP_HEADER.AUTHORIZATION)

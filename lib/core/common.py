@@ -197,6 +197,14 @@ from thirdparty.six.moves import urllib as _urllib
 from thirdparty.six.moves import zip as _zip
 from thirdparty.termcolor.termcolor import colored
 
+from lib.core.log_pvs import httpClientLogger
+
+
+def save_request_log(url='', resp_code=200):
+    current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    _str = {"time": current_time,  "url":url, "resp_code": resp_code}
+    httpClientLogger.info(json.dumps(_str))
+
 class UnicodeRawConfigParser(_configparser.RawConfigParser):
     """
     RawConfigParser with unicode writing support
